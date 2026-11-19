@@ -1,12 +1,40 @@
 # うまアプリ（JRA 馬券収支シミュレーター）
 
-「2026年1月〜現在まで、ルメール騎手の全騎乗を単勝100円ずつ買っていたら収支はいくら？」のような計算をするローカル Web アプリです。
+「2026年1月〜現在まで、ルメール騎手の全騎乗を単勝100円ずつ買っていたら収支はいくら？」のような計算をする Web アプリです。
 
 - データ元: JRA 公式サイト（www.jra.go.jp の「過去レース結果」：着順・人気・払戻金）
-- 検索時に、指定期間で未取得の開催だけを自動で取得してから計算します（差分更新）
-- データはローカルの SQLite（`data/jra.sqlite`）に保存されます
+- **スマホ版（GitHub Pages）**: https://mktyou-lgtm.github.io/umaapp/ — PC 不要。データは毎日 18:30（日本時間）に自動更新
+- **PC 版（ローカル）**: 検索時に、指定期間で未取得の開催だけを自動で取得してから計算します（差分更新）。データはローカルの SQLite（`data/jra.sqlite`）に保存されます
 
-## 起動
+## スマホ版（GitHub Pages）の仕組み
+
+`.github/workflows/update.yml` が毎日 18:30（日本時間）に次の処理を行います。手動で実行するときは GitHub の Actions タブから「データ更新とサイト公開」→ Run workflow。
+
+1. 前回までのデータベースを Actions のキャッシュから復元
+2. JRA 公式サイトから新しい開催の分だけ取得（`npm run sync`）
+3. 計算に必要な列だけを `site/data/data.json` に書き出し（`npm run export`）、画面ファイルと一緒に GitHub Pages へ公開
+
+画面（`public/index.html`）は、API があればローカル版、無ければ `data/data.json` を読み込んでブラウザ内で計算する静的版として動きます。計算ロジックは `public/sim.js` を両方で共有しています。
+
+注意:
+
+- 競馬データはリポジトリには含めず、公開ページにだけ載せています。公開ページは URL を知っていれば誰でも見られます
+- キャッシュが消えた場合（7 日間使われなかったときなど）は、次回の実行で 2026 年分を最初から取り直します（20〜30 分）
+- 60 日間リポジトリに動きが無いと、GitHub が定期実行を自動で止めます。止まった場合は GitHub からのメールか Actions タブから再開してください
+
+公開する前の確認は次の手順でできます。
+
+```bash
+npm run export
+```
+
+```bash
+npm run preview
+```
+
+http://localhost:4000 で公開版と同じ画面を確認できます。
+
+## PC 版の起動
 
 Node.js 22.13 以上（推奨 24）が必要です。
 
@@ -63,6 +91,10 @@ JRA 公式サイトのデータを個人的に利用するためのツールで�
 |---|---|
 | `src/jra.js` | JRA 公式サイトの開催一覧・結果ページの取得とパース |
 | `src/sync.js` | 期間指定の差分同期 |
-| `src/query.js` | 収支計算 |
+| `src/query.js` | 収支計算（ローカル版。DB から取り出して `public/sim.js` で集計） |
 | `src/server.js` | HTTP サーバー / API |
-| `public/index.html` | 画面 |
+| `public/index.html` | 画面（ローカル版・静的版 共通） |
+| `public/sim.js` | 収支計算ロジック（ローカル版・静的版 共通） |
+| `scripts/export.js` | 静的サイト（`site/`）の書き出し |
+| `scripts/serve-static.js` | 静的サイトの確認用サーバー |
+| `.github/workflows/update.yml` | 毎日のデータ更新と GitHub Pages への公開 |
