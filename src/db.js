@@ -1,0 +1,97 @@
+import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const DB_PATH = process.env.UMAAPP_DB || join(ROOT, 'data', 'jra.sqlite');
+mkdirSync(dirname(DB_PATH), { recursive: true });
+
+export const db = new DatabaseSync(DB_PATH);
+db.exec(`
+PRAGMA journal_mode = WAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+
+-- JRA サイトの月別開催一覧ページ（cname はページを開くためのキー）
+CREATE TABLE IF NOT EXISTS months (
+  ym TEXT PRIMARY KEY,            -- '2026-01'
+  cname TEXT,
+  fetched_at TEXT                 -- 一覧を取得した日時（NULL = 未取得）
+);
+
+-- 開催（場・回・日ごと）
+CREATE TABLE IF NOT EXISTS meetings (
+  key TEXT PRIMARY KEY,           -- 年+場+回+日 '2026060101'
+  date TEXT NOT NULL,
+  venue_code TEXT NOT NULL,
+  venue TEXT NOT NULL,
+  srl_cname TEXT NOT NULL,        -- レース選択ページ
+  ses_cname TEXT,                 -- 全レース結果ページ
+  races_expected INTEGER,
+  complete INTEGER NOT NULL DEFAULT 0,  -- 全レースの確定結果を取得済みなら 1
+  fetched_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_meetings_date ON meetings(date);
+
+CREATE TABLE IF NOT EXISTS races (
+  race_id TEXT PRIMARY KEY,       -- 202606010101 (年+場+回+日+R)
+  date TEXT NOT NULL,
+  venue_code TEXT NOT NULL,
+  venue TEXT NOT NULL,
+  race_no INTEGER NOT NULL,
+  name TEXT,
+  surface TEXT,                   -- 芝 / ダ / 障
+  distance INTEGER,
+  weather TEXT,
+  track_condition TEXT,
+  class_text TEXT,
+  headcount INTEGER,
+  fetched_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_races_date ON races(date);
+
+CREATE TABLE IF NOT EXISTS entries (
+  race_id TEXT NOT NULL REFERENCES races(race_id) ON DELETE CASCADE,
+  horse_no INTEGER NOT NULL,
+  frame_no INTEGER,
+  finish TEXT,                    -- '1', '2', '中止', '取消', '除外', '失格', '3(降)' など
+  finish_num INTEGER,             -- 着順の数値（取消・除外・中止などは NULL）
+  horse_id TEXT,
+  horse_name TEXT,
+  sex_age TEXT,
+  weight_carried REAL,
+  jockey_id TEXT,
+  jockey_name TEXT,
+  trainer_id TEXT,
+  trainer_name TEXT,
+  odds REAL,
+  popularity INTEGER,
+  horse_weight TEXT,
+  PRIMARY KEY (race_id, horse_no)
+);
+CREATE INDEX IF NOT EXISTS idx_entries_jockey ON entries(jockey_id);
+CREATE INDEX IF NOT EXISTS idx_entries_trainer ON entries(trainer_id);
+CREATE INDEX IF NOT EXISTS idx_entries_horse ON entries(horse_id);
+
+CREATE TABLE IF NOT EXISTS payouts (
+  race_id TEXT NOT NULL REFERENCES races(race_id) ON DELETE CASCADE,
+  bet_type TEXT NOT NULL,         -- 単勝 / 複勝 / 枠連 / 馬連 / ワイド / 馬単 / 三連複 / 三連単
+  combination TEXT NOT NULL,      -- '7' / '7-15' など
+  amount INTEGER NOT NULL,        -- 100円あたり払戻
+  popularity INTEGER,
+  PRIMARY KEY (race_id, bet_type, combination)
+);
+`);
+
+export function tx(fn) {
+  db.exec('BEGIN');
+  try {
+    const r = fn();
+    db.exec('COMMIT');
+    return r;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}

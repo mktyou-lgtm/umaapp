@@ -1,0 +1,80 @@
+name: データ更新とサイト公開
+
+on:
+  schedule:
+    # 毎日 18:30（日本時間）。開催の無い日は数リクエストで終わる。
+    - cron: '30 9 * * *'
+  workflow_dispatch:
+    inputs:
+      from:
+        description: '取得開始日（YYYY-MM-DD）'
+        required: false
+        default: '2026-01-01'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # 前回までに取得したデータベースを復元（差分だけ取得するため）
+      - name: データベースを復元
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: jra-db-${{ github.run_id }}
+          restore-keys: jra-db-
+
+      - name: JRA 公式サイトから差分取得
+        id: sync
+        continue-on-error: true
+        env:
+          SYNC_FROM: ${{ inputs.from || '2026-01-01' }}
+        run: npm run sync
+
+      - name: データベースを保存
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: jra-db-${{ github.run_id }}
+
+      - name: 静的サイトを書き出し
+        run: npm run export
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: 取得エラーがあれば知らせる
+        if: steps.sync.outcome == 'failure'
+        run: |
+          echo "::warning::JRA サイトからの取得でエラーがありました。取得済みのデータでサイトを更新しています。"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

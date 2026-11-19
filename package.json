@@ -1,0 +1,19 @@
+{
+  "name": "umaapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "JRA レース成績の馬券収支シミュレーター（netkeiba データ）",
+  "type": "module",
+  "scripts": {
+    "start": "node --use-system-ca --no-warnings=ExperimentalWarning src/server.js",
+    "sync": "node --use-system-ca --no-warnings=ExperimentalWarning src/cli-sync.js",
+    "export": "node --no-warnings=ExperimentalWarning scripts/export.js",
+    "preview": "node scripts/serve-static.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}
