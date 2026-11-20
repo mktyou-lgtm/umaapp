@@ -31,8 +31,23 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
 form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-2); }
-input, select, button { font: inherit; color: var(--ink); background: var(--page); border: 1px solid var(--axis); border-radius: 6px; padding: 6px 10px; }
-input[name=q] { width: 180px; } input[type=number] { width: 90px; }
+input, select, button { font: inherit; font-size: 14px; color: var(--ink); background: var(--page); border: 1px solid var(--axis); border-radius: 6px; padding: 6px 10px; }
+/* スマホでは 16px 未満だと入力時に画面が拡大されるため */
+@media (max-width: 600px) { input, select { font-size: 16px; } }
+input[name=q] { width: 200px; } input[type=number] { width: 90px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-2); }
+/* 名前の入力候補 */
+.ac { position: relative; }
+.ac-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 10; min-width: 100%; width: max-content;
+  max-width: min(340px, calc(100vw - 32px)); max-height: 320px; overflow-y: auto; margin: 0; padding: 4px 0; list-style: none;
+  background: var(--surface); border: 1px solid var(--axis); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+.ac-list[hidden] { display: none; }
+.ac-list li { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 9px 12px; cursor: pointer; font-size: 14px; color: var(--ink); }
+.ac-list li.active { background: var(--chip); }
+@media (hover: hover) { .ac-list li:hover { background: var(--chip); } }
+.ac-list li small { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ac-list li mark { background: none; color: inherit; font-weight: 700; }
+.ac-list li.ac-empty { cursor: default; color: var(--muted); font-size: 13px; }
 button { background: var(--accent); border-color: var(--accent); color: #fff; padding: 7px 18px; cursor: pointer; font-weight: 600; }
 button:disabled { opacity: .6; cursor: default; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
@@ -85,7 +100,14 @@ tr.refund td { color: var(--muted); }
           <option value="horse">馬</option>
         </select>
       </label>
-      <label>名前（部分一致）<input name="q" value="ルメール" required></label>
+      <div class="field">
+        <label for="q">名前（入力すると候補を表示）</label>
+        <div class="ac">
+          <input id="q" name="q" value="ルメール" required autocomplete="off" spellcheck="false"
+            role="combobox" aria-autocomplete="list" aria-controls="acList" aria-expanded="false">
+          <ul id="acList" class="ac-list" role="listbox" aria-label="名前の候補" hidden></ul>
+        </div>
+      </div>
       <label>開始日<input type="date" name="from"></label>
       <label>終了日<input type="date" name="to"></label>
       <label>券種
@@ -150,6 +172,89 @@ const backend = {
     ? engine.simulate({ kind: p.kind, id, from: p.from, to: p.to, bet: p.bet, stake: p.stake })
     : api('api/simulate?' + new URLSearchParams({ kind: p.kind, id, from: p.from, to: p.to, bet: p.bet, stake: p.stake })),
 };
+let ready = false; // データ（または API）が使える状態か
+
+// ---- 名前の入力候補（プルダウン） ----
+const qInput = f.q;
+const acList = $('#acList');
+const ac = { items: [], active: -1, seq: 0, timer: null };
+const RIDE_UNIT = { jockey: '騎乗', trainer: '出走', horse: '出走' };
+
+function acClose() {
+  acList.hidden = true;
+  ac.active = -1;
+  qInput.setAttribute('aria-expanded', 'false');
+  qInput.removeAttribute('aria-activedescendant');
+}
+
+// 入力文字に一致する部分を太字に（正規化で位置がずれる場合はそのまま表示）
+function highlight(name, q) {
+  const n = normalizeName(q);
+  const i = n ? name.indexOf(n) : -1;
+  return i < 0 ? esc(name) : esc(name.slice(0, i)) + '<mark>' + esc(name.slice(i, i + n.length)) + '</mark>' + esc(name.slice(i + n.length));
+}
+
+function acRender(q) {
+  const unit = RIDE_UNIT[f.kind.value];
+  acList.innerHTML = ac.items.length
+    ? ac.items.map((c, i) => `<li role="option" id="ac-${i}" data-i="${i}" class="${i === ac.active ? 'active' : ''}" aria-selected="${i === ac.active}"><span>${highlight(c.name, q)}</span><small>${unit} ${c.rides.toLocaleString()}</small></li>`).join('')
+    : `<li class="ac-empty" aria-disabled="true">該当する${f.kind.selectedOptions[0].text}はいません（期間内）</li>`;
+  acList.hidden = false;
+  qInput.setAttribute('aria-expanded', 'true');
+  if (ac.active >= 0) {
+    qInput.setAttribute('aria-activedescendant', `ac-${ac.active}`);
+    acList.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+  } else qInput.removeAttribute('aria-activedescendant');
+}
+
+async function acUpdate() {
+  const q = qInput.value.trim();
+  if (!q || !ready || !normalizeName(q)) return acClose();
+  const seq = ++ac.seq;
+  let { from, to } = params();
+  if (!from || !to || from > to) { from = '1900-01-01'; to = '2999-12-31'; }
+  try {
+    const items = await backend.candidates({ kind: f.kind.value, q, from, to });
+    if (seq !== ac.seq || document.activeElement !== qInput) return; // 古い結果・フォーカスが外れた後は捨てる
+    ac.items = items.slice(0, 10);
+    ac.active = -1;
+    acRender(q);
+  } catch { acClose(); }
+}
+
+function acPick(i) {
+  const c = ac.items[i];
+  if (!c) return;
+  qInput.value = c.name;
+  state.picked = { kind: f.kind.value, id: c.id, name: c.name }; // 同名がいても選んだ ID で計算する
+  acClose();
+}
+
+qInput.addEventListener('input', () => {
+  state.picked = null;
+  clearTimeout(ac.timer);
+  ac.timer = setTimeout(acUpdate, engine ? 60 : 200);
+});
+qInput.addEventListener('focus', () => { if (qInput.value.trim() && !state.picked) acUpdate(); });
+qInput.addEventListener('blur', () => { ac.seq++; acClose(); });
+qInput.addEventListener('keydown', (e) => {
+  if (acList.hidden) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); acUpdate(); }
+    return;
+  }
+  const n = ac.items.length;
+  if (e.key === 'ArrowDown' && n) { e.preventDefault(); ac.active = (ac.active + 1) % n; acRender(qInput.value); }
+  else if (e.key === 'ArrowUp' && n) { e.preventDefault(); ac.active = (ac.active - 1 + n) % n; acRender(qInput.value); }
+  else if (e.key === 'Enter' && ac.active >= 0) { e.preventDefault(); acPick(ac.active); }
+  else if (e.key === 'Escape') { e.preventDefault(); acClose(); }
+});
+// タップ・クリックで入力欄のフォーカスが外れないようにしてから選択
+acList.addEventListener('pointerdown', (e) => e.preventDefault());
+acList.addEventListener('click', (e) => {
+  const li = e.target.closest('[data-i]');
+  if (li) acPick(Number(li.dataset.i));
+});
+f.kind.addEventListener('change', () => { state.picked = null; acClose(); });
 
 function params() {
   const fd = new FormData(f);
@@ -166,6 +271,7 @@ async function init() {
     f.from.value = s.today.slice(0, 4) + '-01-01';
     f.to.value = s.today;
     showDb(s);
+    ready = true;
     if (s.sync.running) poll();
     return;
   }
@@ -187,6 +293,7 @@ async function init() {
   const updated = new Date(m.generatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   $('#dbinfo').textContent = `データ: ${m.races.toLocaleString()} レース（${m.firstDate} 〜 ${m.lastDate}）・${updated} 更新`;
   $('#go').disabled = false;
+  ready = true;
 }
 
 function showDb(s) {
@@ -231,7 +338,10 @@ f.addEventListener('submit', async (e) => {
   e.preventDefault();
   const p = params();
   if (p.from > p.to) return alert('開始日が終了日より後になっています');
-  state.selectedId = null;
+  acClose();
+  // 候補から選んだ名前のままなら、その ID を使う
+  const pk = state.picked;
+  state.selectedId = pk && pk.kind === p.kind && pk.name === p.q ? pk.id : null;
   state.lastParams = p;
   $('#go').disabled = true;
   try {
