@@ -132,6 +132,37 @@ const nospace = (s) => norm(s).replace(/\s/g, '');
 const intOrNull = (s) => { const v = parseInt(String(s ?? '').replace(/,/g, ''), 10); return Number.isFinite(v) ? v : null; };
 
 /**
+ * 騎手・調教師の ID。JRA 所属はプロフィールのコード（'05339' など）。
+ * 短期免許の外国人騎手や地方の騎手はコードの形式が違う（pw04krc…）ため、名前で識別する（'n:D.レーン'）。
+ */
+function personId(a, re, name) {
+  const m = (a.attr('onclick') || '').match(re);
+  return m ? m[1].slice(-5) : name ? `n:${name}` : null;
+}
+
+/** 結果ページ・出馬表で共通のレース情報（レース名・コース・格付けなど） */
+function parseRaceHeader(unit) {
+  const typeCell = (c) => nospace(unit.find(`.race_title .type .cell.${c}`).first().text());
+  // 格付けはアイコン画像の alt（「GⅠ」「J・GⅡ」「リステッド」など）→ 'G1' 'JG2' 'L'
+  const gradeAlt = norm(unit.find('.race_title .race_name .grade_icon img').first().attr('alt'));
+  const g = gradeAlt.replace(/[・\s]/g, '').match(/^(J?)G(I{1,3})$/);
+  const grade = g ? `${g[1]}G${g[2].length}` : /リステッド/.test(gradeAlt) ? 'L' : null;
+  const courseText = norm(unit.find('.race_title .cell.course').first().text());
+  const name = nospace(unit.find('.race_title .race_name').first().text()) || null;
+  const category = typeCell('category');
+  const isJump = /障害/.test(`${category}${name}`);
+  const time = norm(unit.find('.cell.time').first().text()).match(/(\d{1,2})時(\d{2})分/);
+  return {
+    name,
+    surface: isJump ? '障' : /ダート/.test(courseText) ? 'ダ' : /芝/.test(courseText) ? '芝' : null,
+    distance: intOrNull(courseText.match(/([\d,]+)\s*メートル/)?.[1]),
+    class_text: [category, typeCell('class'), typeCell('rule'), typeCell('weight')].filter(Boolean).join(' ') || null,
+    grade,
+    post_time: time ? `${time[1].padStart(2, '0')}:${time[2]}` : null,
+  };
+}
+
+/**
  * 全レース一覧ページ（1 開催日・1 場の全レース結果と払戻）をパース。
  * 結果が出ていないレースは含めない。
  */
@@ -169,14 +200,15 @@ export async function fetchMeetingResults(sesCname, meeting) {
         horse_name: nospace(horseA.text() || row.children('td.horse').text()),
         sex_age: nospace(row.children('td.age').text()),
         weight_carried: parseFloat(row.children('td.weight').text()) || null,
-        jockey_id: code(jockeyA, /pw04kmk(\d+)\//)?.slice(-5) ?? null,
         jockey_name: nospace(jockeyA.text() || jockeyTd.clone().children('.mark').remove().end().text()),
-        trainer_id: code(trainerA, /pw05cmk(\d+)\//)?.slice(-5) ?? null,
         trainer_name: nospace(trainerA.text() || row.children('td.trainer').text()) || null,
         odds: null,
         popularity: intOrNull(row.children('td.pop').text()),
         horse_weight: nospace(row.children('td.h_weight').text()) || null,
       });
+      const e = entries.at(-1);
+      e.jockey_id = personId(jockeyA, /pw04kmk(\d+)\//, e.jockey_name);
+      e.trainer_id = personId(trainerA, /pw05cmk(\d+)\//, e.trainer_name);
     });
     // 結果未確定（発走前）のレースはスキップ
     if (!entries.length || !entries.some((e) => e.finish_num != null)) return;
@@ -199,16 +231,7 @@ export async function fetchMeetingResults(sesCname, meeting) {
       if (e) e.odds = p.amount / 100;
     }
 
-    const typeCell = (c) => nospace(unit.find(`.race_title .type .cell.${c}`).first().text());
-    // 格付けはアイコン画像の alt（「GⅠ」「J・GⅡ」「リステッド」など）→ 'G1' 'JG2' 'L'
-    const gradeAlt = norm(unit.find('.race_title .race_name .grade_icon img').first().attr('alt'));
-    const g = gradeAlt.replace(/[・\s]/g, '').match(/^(J?)G(I{1,3})$/);
-    const grade = g ? `${g[1]}G${g[2].length}` : /リステッド/.test(gradeAlt) ? 'L' : null;
-    const courseText = norm(unit.find('.race_title .cell.course').first().text());
-    const name = nospace(unit.find('.race_title .race_name').first().text()) || null;
-    const category = typeCell('category');
-    const isJump = /障害/.test(`${category}${name}`);
-    const surface = isJump ? '障' : /ダート/.test(courseText) ? 'ダ' : /芝/.test(courseText) ? '芝' : null;
+    const { name, surface, distance, class_text, grade } = parseRaceHeader(unit);
     const baba = unit.find('.cell.baba li');
     out.push({
       race: {
@@ -219,16 +242,88 @@ export async function fetchMeetingResults(sesCname, meeting) {
         race_no: raceNo,
         name,
         surface,
-        distance: intOrNull(courseText.match(/([\d,]+)\s*メートル/)?.[1]),
+        distance,
         weather: nospace(baba.filter('.weather').find('.txt').text()) || null,
         track_condition: nospace(baba.not('.weather').first().find('.txt').text()) || null,
-        class_text: [category, typeCell('class'), typeCell('rule'), typeCell('weight')].filter(Boolean).join(' ') || null,
+        class_text,
         grade,
         headcount: entries.length,
       },
       entries,
       payouts,
       people,
+    });
+  });
+  return out;
+}
+
+// ---- 出馬表 ----
+
+/** 出馬表が出ている開催の一覧（出馬表トップ → 開催ごとのレース選択ページ） */
+export async function fetchCardMeetings() {
+  const html = await fetchPage({ cname: 'pw01dli00/F3', path: 'accessD.html' });
+  const out = new Map();
+  // pw01drl00 + 場(2) + 年(4) + 回(2) + 日(2) + 日付(8)
+  for (const m of html.matchAll(/pw01drl00(\d{2})(\d{4})(\d{2})(\d{2})(\d{8})\/[0-9A-F]{2}/g)) {
+    const [cname, venue, year, kai, day, date] = m;
+    if (!VENUES[venue]) continue;
+    const key = `${year}${venue}${kai}${day}`;
+    out.set(key, { key, cname, venue_code: venue, venue: VENUES[venue], date: ymd(date) });
+  }
+  return [...out.values()];
+}
+
+/** 開催の出馬表（全レース）をパース → [{ race, entries }] */
+export async function fetchCards(meeting) {
+  const rl = await fetchPage({ cname: meeting.cname, path: 'accessD.html' });
+  const des = rl.match(/pw01des\d{20}\/[0-9A-F]{2}/)?.[0];
+  if (!des) throw new Error(`${meeting.date} ${meeting.venue} の出馬表（全レース）が見つかりません`);
+  const $ = cheerio.load(await fetchPage({ cname: des, path: 'accessD.html' }));
+  const out = [];
+  $('li[id^="syutsuba_"]').each((_, li) => {
+    const unit = $(li);
+    const raceNo = intOrNull(unit.attr('id').match(/syutsuba_(\d+)R/)?.[1]);
+    if (!raceNo) return;
+    const entries = [];
+    unit.find('table tbody tr').each((_, tr) => {
+      const row = $(tr);
+      if (!row.children('td.num').length) return;
+      const horseA = row.children('td.horse').find('a').first();
+      const jockeyA = row.children('td.jockey').find('a').first();
+      const trainerA = row.children('td.trainer').find('a').first();
+      const jockey_name = nospace(jockeyA.text() || row.children('td.jockey').clone().children('.mark').remove().end().text()) || null;
+      const trainer_name = nospace(trainerA.text() || row.children('td.trainer').text()) || null;
+      const oddsText = nospace(row.children('td.odds').text());
+      const rowText = nospace(row.text());
+      entries.push({
+        horse_no: intOrNull(row.children('td.num').text()),
+        frame_no: intOrNull(row.children('td.waku').find('img').attr('alt')?.match(/\d+/)?.[0]),
+        horse_id: (horseA.attr('href') || '').match(/pw01dud\d{2}(\d{10})/)?.[1] ?? null,
+        horse_name: nospace(horseA.text() || row.children('td.horse').text()),
+        sex_age: nospace(row.children('td.age').text()) || null,
+        weight_carried: parseFloat(row.children('td.weight').text()) || null,
+        jockey_id: personId(jockeyA, /pw04kmk(\d+)\//, jockey_name),
+        jockey_name,
+        trainer_id: personId(trainerA, /pw05cmk(\d+)\//, trainer_name),
+        trainer_name,
+        odds: parseFloat(oddsText) || null,
+        // 出走取消・競走除外は出馬表に表示が出る
+        status: /取消/.test(rowText) ? '取消' : /除外/.test(rowText) ? '除外' : null,
+      });
+    });
+    if (!entries.length) return;
+    const h = parseRaceHeader(unit);
+    out.push({
+      race: {
+        race_id: `${meeting.key}${String(raceNo).padStart(2, '0')}`,
+        date: meeting.date,
+        venue_code: meeting.venue_code,
+        venue: meeting.venue,
+        race_no: raceNo,
+        ...h,
+        headcount: entries.length,
+      },
+      entries,
     });
   });
   return out;

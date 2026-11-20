@@ -2,7 +2,7 @@
 
 export const BET_TYPES = ['単勝', '複勝'];
 // コース: all = 両方（芝・ダート。障害レースも含む全レース）
-export const SURFACES = { all: '両方', 芝: '芝', ダ: 'ダート' };
+export const SURFACES = { all: '両方', 芝: '芝', ダ: 'ダート', 障: '障害' };
 export const matchSurface = (surface, filter) => !filter || filter === 'all' || surface === filter;
 export const KIND_LABELS = { jockey: '騎手', trainer: '調教師', horse: '馬' };
 
@@ -87,15 +87,34 @@ export function classOf(classText, grade) {
  * 絞り込み。f: { surface, venue, dist, pop, cond, cls }（'all' または未指定は絞り込まない）
  * rows の各要素は surface, venue, distance, popularity, track_condition, cls, grade を持つ。
  */
-export function applyFilters(rows, f = {}) {
+export function matchFilters(r, f = {}) {
   const on = (v) => v && v !== 'all';
-  return rows.filter((r) =>
-    matchSurface(r.surface, f.surface)
+  return matchSurface(r.surface, f.surface)
     && (!on(f.venue) || r.venue === f.venue)
     && (!on(f.dist) || distBand(r.distance) === f.dist)
     && (!on(f.pop) || popBand(r.popularity) === f.pop)
     && (!on(f.cond) || r.track_condition === f.cond)
-    && (!on(f.cls) || (f.cls === 'g1' ? r.grade === 'G1' : r.cls === f.cls)));
+    && (!on(f.cls) || (f.cls === 'g1' ? r.grade === 'G1' : r.cls === f.cls));
+}
+export const applyFilters = (rows, f = {}) => rows.filter((r) => matchFilters(r, f));
+
+/**
+ * 出馬表で使う「同じ条件」の範囲 → 絞り込み条件
+ *   same: 同じ競馬場・コース・距離帯 / course: 同じコース・距離帯 / surface: 同じコース（芝・ダ）/ all: 全レース
+ */
+export const CARD_SCOPES = [
+  { key: 'same', label: '同じ競馬場・コース・距離' },
+  { key: 'course', label: '同じコース・距離' },
+  { key: 'surface', label: '同じコース（芝/ダート）' },
+  { key: 'all', label: '全レース' },
+];
+export function scopeFilters(race, scope) {
+  if (scope === 'all') return {};
+  const f = { surface: race.surface };
+  if (scope === 'surface') return f;
+  f.dist = distBand(race.distance);
+  if (scope === 'same') f.venue = race.venue;
+  return f;
 }
 
 /** 条件別の成績（返還は除く）。各区分: { label, bets, first, second, third, hits, stake, ret, profit, recovery, winRate, placeRate } */
@@ -219,10 +238,100 @@ export function createStaticEngine(data) {
   const ID = { jockey: 'jockey_id', trainer: 'trainer_id', horse: 'horse_id' };
   const NAMES = { jockey: N.j, trainer: N.t, horse: N.h };
   const KANA = { jockey: N.jk || {}, trainer: N.tk || {}, horse: {} };
+
+  // ID → 出走（古い順）の索引。races は日付順なので ri の昇順 = 日付順
+  const index = { jockey: new Map(), trainer: new Map(), horse: new Map() };
+  entries.forEach((e, i) => {
+    for (const kind of ['jockey', 'trainer', 'horse']) {
+      const id = e[ID[kind]];
+      if (id == null) continue;
+      let list = index[kind].get(id);
+      if (!list) index[kind].set(id, (list = []));
+      list.push(i);
+    }
+  });
+  for (const m of Object.values(index)) for (const list of m.values()) list.sort((a, b) => entries[a].ri - entries[b].ri);
+
+  /** 1 人（1 頭）の成績。返還は除く。回収率は単勝・複勝とも 100 円ずつ買った場合 */
+  function stats(kind, id, { from = '0000-00-00', to = '9999-99-99', filters = {} } = {}) {
+    const s = { runs: 0, first: 0, second: 0, third: 0, winRet: 0, placeRet: 0 };
+    const f = cleanFilters(filters);
+    for (const i of index[kind].get(id) || []) {
+      const e = entries[i], r = races[e.ri];
+      if (r.date < from || r.date > to || isRefunded(e.finish)) continue;
+      if (!matchFilters({ ...r, popularity: e.popularity }, f)) continue;
+      s.runs++;
+      if (e.finish_num === 1) s.first++; else if (e.finish_num === 2) s.second++; else if (e.finish_num === 3) s.third++;
+      s.winRet += pay.単勝.get(`${e.ri}:${e.horse_no}`) || 0;
+      s.placeRet += pay.複勝.get(`${e.ri}:${e.horse_no}`) || 0;
+    }
+    const n = s.runs;
+    return {
+      runs: n, first: s.first, second: s.second, third: s.third,
+      winRate: n ? s.first / n : null,
+      placeRate: n ? (s.first + s.second + s.third) / n : null,
+      winRecovery: n ? s.winRet / (n * 100) : null,
+      placeRecovery: n ? s.placeRet / (n * 100) : null,
+    };
+  }
+
+  /** 馬の近走（新しい順） */
+  function form(horseId, beforeDate, n = 5) {
+    const list = (index.horse.get(horseId) || []).filter((i) => races[entries[i].ri].date < beforeDate);
+    return list.slice(-n).reverse().map((i) => {
+      const e = entries[i], r = races[e.ri];
+      return {
+        date: r.date, venue: r.venue, race_name: r.race_name, surface: r.surface, distance: r.distance, grade: r.grade,
+        headcount: r.headcount, finish: e.finish, finish_num: e.finish_num, popularity: e.popularity, jockey_name: N.j[e.jockey_id],
+      };
+    });
+  }
+
+  // 出馬表
+  const C = data.cards || { races: [], entries: [] };
+  const cardRaces = C.races.map(([race_id, date, venue, race_no, name, surface, distance, cls, grade, post_time, headcount]) =>
+    ({ race_id, date, venue, race_no, race_name: name, surface, distance, cls, grade, post_time, headcount }));
+  const cardEntries = new Map();
+  for (const [ci, horse_no, frame_no, horse_id, jockey_id, trainer_id, sex_age, weight_carried, odds, status] of C.entries) {
+    if (!cardEntries.has(ci)) cardEntries.set(ci, []);
+    cardEntries.get(ci).push({ horse_no, frame_no, horse_id, jockey_id, trainer_id, sex_age, weight_carried, odds, status });
+  }
+  const dayBefore = (date, days) => new Date(Date.parse(date) - days * 864e5).toISOString().slice(0, 10);
   const inRange = (e, from, to) => { const d = races[e.ri].date; return d >= from && d <= to; };
 
   return {
-    meta: { generatedAt: data.generatedAt, firstDate: data.firstDate, lastDate: data.lastDate, races: races.length },
+    meta: {
+      generatedAt: data.generatedAt, firstDate: data.firstDate, lastDate: data.lastDate, races: races.length,
+      cardsFetchedAt: C.fetchedAt || null,
+    },
+
+    /** 出馬表のレース一覧 */
+    cardList: () => cardRaces,
+
+    /**
+     * 出馬表 1 レース分と、出走馬ごとの騎手・調教師・馬の成績。
+     * scope: CARD_SCOPES のキー（騎手・調教師・馬の「同条件」成績の範囲）、days: 集計期間（レース前日までの日数）
+     */
+    card(raceId, { scope = 'course', days = 365 } = {}) {
+      const ci = cardRaces.findIndex((r) => r.race_id === raceId);
+      if (ci < 0) return null;
+      const race = cardRaces[ci];
+      const range = { from: dayBefore(race.date, days), to: dayBefore(race.date, 1) };
+      const filters = scopeFilters(race, scope);
+      const runners = (cardEntries.get(ci) || []).map((e) => ({
+        ...e,
+        horse_name: N.h[e.horse_id], jockey_name: N.j[e.jockey_id], trainer_name: N.t[e.trainer_id],
+        jockey: stats('jockey', e.jockey_id, { ...range, filters }),
+        trainer: stats('trainer', e.trainer_id, { ...range, filters }),
+        horse: stats('horse', e.horse_id, range),
+        horseCond: stats('horse', e.horse_id, { ...range, filters }),
+        form: form(e.horse_id, race.date),
+      }));
+      // 単勝オッズの順位（人気）
+      const ranked = runners.filter((r) => r.odds && !r.status).sort((a, b) => a.odds - b.odds);
+      ranked.forEach((r, i) => { r.pop = i + 1; });
+      return { race, range, filters, scope, runners };
+    },
 
     candidates(kind, q, from, to) {
       const key = ID[kind], names = NAMES[kind], kana = KANA[kind];

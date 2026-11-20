@@ -4,6 +4,7 @@ import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startSync, status, dbStats, todayJST } from './sync.js';
 import { candidates, simulate } from './query.js';
+import { datasetJson } from './dataset.js';
 
 const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const PORT = Number(process.env.PORT || 3939);
@@ -42,6 +43,16 @@ const server = createServer(async (req, res) => {
         kind: p.get('kind') || 'jockey', id: p.get('id'), from, to,
         bet: p.get('bet') || '単勝', stake: p.get('stake') || 100, ...filters,
       }));
+    }
+    // 出馬表画面用：ブラウザ内で計算するためのデータ一式（静的版の data.json と同じ形）
+    if (url.pathname === '/api/dataset') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(datasetJson());
+    }
+    // 出馬表を今すぐ取り直す（オッズ・取消の更新）
+    if (url.pathname === '/api/cards/refresh' && req.method === 'POST') {
+      const today = todayJST();
+      return json(res, 200, { sync: startSync(today, today, { forceCards: true }) });
     }
     if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' });
 

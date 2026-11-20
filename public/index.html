@@ -102,6 +102,52 @@ tr.refund td { color: var(--muted); }
 /* スマホでは着別度数を省いて回収率まで横スクロールなしで見えるように */
 @media (max-width: 600px) { #bd .hide-sm { display: none; } #bd th, #bd td { padding: 5px 6px; } }
 #bd tr.current td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+/* 画面切り替え */
+.views { display: flex; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--grid); }
+.views button { background: none; border: none; border-bottom: 3px solid transparent; border-radius: 0; color: var(--ink-2); font-weight: 600; padding: 8px 14px; }
+.views button.active { color: var(--ink); border-bottom-color: var(--accent); }
+
+/* 出馬表 */
+.chips .chip { cursor: pointer; }
+.race-chips .chip { min-width: 44px; text-align: center; }
+.card-opts { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-top: 12px; }
+.ctable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ctable th { text-align: left; }
+.ctable td { text-align: left; vertical-align: top; white-space: normal; padding: 8px; }
+.ctable tr.scratched td { color: var(--muted); }
+.ctable tr.scratched .hname { text-decoration: line-through; }
+.waku { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 4px; font-weight: 700; font-size: 14px; border: 1px solid var(--axis); }
+.w1 { background: #ffffff; color: #0b0b0b; } .w2 { background: #222222; color: #ffffff; } .w3 { background: #e03c31; color: #ffffff; }
+.w4 { background: #2a6fdb; color: #ffffff; } .w5 { background: #f2c800; color: #0b0b0b; } .w6 { background: #1e9e4a; color: #ffffff; }
+.w7 { background: #f08a24; color: #0b0b0b; } .w8 { background: #f28fb8; color: #0b0b0b; } .w0 { background: var(--chip); color: var(--muted); }
+.hname { font-weight: 700; font-size: 14px; white-space: nowrap; }
+.hname a { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--axis); }
+.ctable td.c-odds { white-space: nowrap; }
+.pstat > span { white-space: nowrap; }
+.sub2 { color: var(--muted); font-size: 12px; }
+.odds b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.pname a { color: var(--ink); font-weight: 600; text-decoration: none; border-bottom: 1px dotted var(--axis); }
+.pstat { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.pstat .best { color: var(--accent); font-weight: 700; }
+.pstat.few, .pstat.few .best { color: var(--muted); font-weight: normal; }
+.form { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
+.fin { display: inline-block; min-width: 22px; padding: 1px 4px; border-radius: 4px; text-align: center; font-size: 12px; background: var(--chip); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.fin.f1 { background: var(--accent); color: #fff; font-weight: 700; }
+.fin.f2, .fin.f3 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); font-weight: 600; }
+.status-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; background: var(--chip); color: var(--down-text); font-size: 12px; font-weight: 600; }
+/* スマホでは 1 頭ずつのカード表示に */
+@media (max-width: 700px) {
+  .ctable thead { display: none; }
+  .ctable tr { display: grid; grid-template-columns: 34px 1fr auto; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid var(--grid); }
+  .ctable td { padding: 0; border: none; }
+  .ctable td.c-no { grid-row: span 4; }
+  .ctable td.c-odds { text-align: right; }
+  .ctable td.c-j, .ctable td.c-t, .ctable td.c-h { grid-column: 2 / span 2; }
+  .ctable td[data-label]::before { content: attr(data-label); display: inline-block; min-width: 3.2em; color: var(--muted); font-size: 11px; }
+  .ctable td.c-j .pname, .ctable td.c-t .pname { display: inline; }
+  .ctable td.c-j .pstat, .ctable td.c-t .pstat { display: inline; margin-left: 6px; }
+}
 </style>
 </head>
 <body>
@@ -109,6 +155,40 @@ tr.refund td { color: var(--muted); }
   <h1>うまアプリ 馬券収支シミュレーター</h1>
   <p class="sub">JRA 公式サイトのレース結果を元に「この条件で毎レース買っていたら？」を計算します。検索時に、まだ取得していない開催のデータを自動で取得します。</p>
 
+  <nav class="views" role="tablist">
+    <button type="button" class="active" data-viewtab="sim" role="tab" aria-selected="true">収支シミュレーター</button>
+    <button type="button" data-viewtab="card" role="tab" aria-selected="false">出馬表</button>
+  </nav>
+
+  <section id="viewCard" hidden>
+    <div class="card">
+      <div class="chips" id="cardDays"></div>
+      <div class="chips" id="cardVenues"></div>
+      <div class="chips race-chips" id="cardRaces"></div>
+      <div class="card-opts">
+        <label>騎手・調教師・馬の成績の範囲<select id="cardScope"></select></label>
+        <label>並び順
+          <select id="cardSort">
+            <option value="seq">馬番</option>
+            <option value="odds">単勝オッズ</option>
+            <option value="jWin">騎手の勝率</option>
+            <option value="jRec">騎手の単勝回収率</option>
+            <option value="tWin">調教師の勝率</option>
+            <option value="hPlace">馬の複勝率</option>
+          </select>
+        </label>
+        <button type="button" class="linkbtn" id="cardRefresh" hidden>出馬表・オッズを今すぐ更新</button>
+      </div>
+      <p class="note" id="cardInfo"></p>
+    </div>
+    <div class="card" id="cardBody" hidden>
+      <p class="title" id="cardTitle"></p>
+      <div id="cardTable"></div>
+      <p class="note">騎手・調教師・馬の成績は、レース前日までの過去 1 年（取得済みデータの範囲）で、選んだ範囲の条件に一致するレースを集計。単回 = 単勝を 100 円ずつ買った場合の回収率。（）内は件数で、10 件未満は薄く表示。各項目で上位 3 頭の値を太字にしています。名前をタップすると、その条件で収支シミュレーターを開きます。</p>
+    </div>
+  </section>
+
+  <section id="viewSim">
   <div class="card">
     <form id="f">
       <label>対象
@@ -181,12 +261,13 @@ tr.refund td { color: var(--muted); }
       <p class="note">払戻は JRA 公式の払戻金（100 円あたり）から算出。単勝オッズは公式の成績表に無いため勝ち馬のみ表示（払戻金 ÷ 100）。取消・除外は返還のため購入数に含めません（競走中止・失格はハズレ扱い）。</p>
     </div>
   </div>
+  </section>
 </main>
 
 <script type="module">
 import {
   createStaticEngine, normalizeName, toHiragana, toKatakana,
-  VENUE_LIST, DIST_BANDS, POP_BANDS, CONDITIONS, CLASS_LIST, CLASS_EXTRA, SURFACES,
+  VENUE_LIST, DIST_BANDS, POP_BANDS, CONDITIONS, CLASS_LIST, CLASS_EXTRA, SURFACES, CARD_SCOPES,
 } from './sim.js';
 const $ = (s) => document.querySelector(s);
 const f = $('#f');
@@ -657,7 +738,180 @@ function drawMonths(d) {
 
 let rz;
 window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => state.data && render(state.data), 150); });
-init();
+
+// ======== 出馬表 ========
+const cv = { engine: null, loading: null, date: null, venue: null, raceId: null };
+$('#cardScope').innerHTML = CARD_SCOPES.map((s) => `<option value="${s.key}">${s.label}</option>`).join('');
+$('#cardScope').value = 'course';
+const WEEK = ['日', '月', '火', '水', '木', '金', '土'];
+const fmtDay = (d) => { const t = new Date(d + 'T00:00:00+09:00'); return `${t.getMonth() + 1}/${t.getDate()}（${WEEK[t.getDay()]}）`; };
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
+const GRADE_LABEL = { G1: 'GⅠ', G2: 'GⅡ', G3: 'GⅢ', JG1: 'J・GⅠ', JG2: 'J・GⅡ', JG3: 'J・GⅢ', L: 'L' };
+
+function showView(name) {
+  document.querySelectorAll('[data-viewtab]').forEach((b) => {
+    const on = b.dataset.viewtab === name;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on);
+  });
+  $('#viewSim').hidden = name !== 'sim';
+  $('#viewCard').hidden = name !== 'card';
+  if (location.hash !== (name === 'card' ? '#card' : '')) history.replaceState(null, '', name === 'card' ? '#card' : location.pathname + location.search);
+  if (name === 'card') openCards();
+}
+document.querySelectorAll('[data-viewtab]').forEach((b) => b.addEventListener('click', () => showView(b.dataset.viewtab)));
+
+// 静的版は読み込み済みのデータ、ローカル版は /api/dataset からデータ一式を受け取ってブラウザ内で計算
+async function cardEngine(reload = false) {
+  if (engine) return engine;
+  if (cv.engine && !reload) return cv.engine;
+  cv.loading ??= fetch('api/dataset', { cache: 'no-store' }).then((r) => r.json()).then((d) => createStaticEngine(d)).finally(() => { cv.loading = null; });
+  cv.engine = await cv.loading;
+  return cv.engine;
+}
+
+async function openCards(reload = false) {
+  $('#cardInfo').textContent = '出馬表を読み込み中…';
+  $('#cardRefresh').hidden = !!engine; // 今すぐ更新はローカル版のみ
+  let e;
+  try { e = await cardEngine(reload); } catch (err) { $('#cardInfo').innerHTML = `<span class="error">読み込めませんでした（${esc(err.message)}）</span>`; return; }
+  const list = e.cardList();
+  if (!list.length) {
+    ['#cardDays', '#cardVenues', '#cardRaces'].forEach((s) => { $(s).innerHTML = ''; });
+    $('#cardBody').hidden = true;
+    $('#cardInfo').textContent = '公開中の出馬表はありません（週末の出馬表は通常、木曜〜金曜に公開されます）。';
+    return;
+  }
+  const days = [...new Set(list.map((r) => r.date))];
+  if (!days.includes(cv.date)) cv.date = days[0];
+  renderCardNav(e);
+}
+
+function renderCardNav(e) {
+  const list = e.cardList();
+  const days = [...new Set(list.map((r) => r.date))];
+  const venues = [...new Set(list.filter((r) => r.date === cv.date).map((r) => r.venue))];
+  if (!venues.includes(cv.venue)) cv.venue = venues[0];
+  const races = list.filter((r) => r.date === cv.date && r.venue === cv.venue);
+  if (!races.some((r) => r.race_id === cv.raceId)) cv.raceId = (races.find((r) => r.race_no === 11) || races[0]).race_id;
+  const chip = (attr, val, label, on, title = '') => `<button type="button" class="chip ${on ? 'active' : ''}" data-${attr}="${esc(val)}" ${title ? `title="${esc(title)}"` : ''}>${label}</button>`;
+  $('#cardDays').innerHTML = days.map((d) => chip('day', d, fmtDay(d), d === cv.date)).join('');
+  $('#cardVenues').innerHTML = venues.map((v) => chip('venue', v, esc(v), v === cv.venue)).join('');
+  $('#cardRaces').innerHTML = races.map((r) => chip('race', r.race_id, `${r.race_no}R`, r.race_id === cv.raceId,
+    `${r.race_name} ${SURFACES[r.surface] || ''}${r.distance}m${r.post_time ? ' ' + r.post_time : ''}`)).join('');
+  $('#cardInfo').textContent = `オッズ・出走取消は ${fmtTime(e.meta.cardsFetchedAt)} 時点。${engine ? '毎日 18:30 と土・日・月曜の朝 8:00 頃に自動更新されます。' : ''}`;
+  renderCard(e);
+}
+
+$('#cardDays').addEventListener('click', async (ev) => { const v = ev.target.closest('[data-day]')?.dataset.day; if (v) { cv.date = v; renderCardNav(await cardEngine()); } });
+$('#cardVenues').addEventListener('click', async (ev) => { const v = ev.target.closest('[data-venue]')?.dataset.venue; if (v) { cv.venue = v; renderCardNav(await cardEngine()); } });
+$('#cardRaces').addEventListener('click', async (ev) => { const v = ev.target.closest('[data-race]')?.dataset.race; if (v) { cv.raceId = v; renderCardNav(await cardEngine()); } });
+$('#cardScope').addEventListener('change', async () => renderCard(await cardEngine()));
+$('#cardSort').addEventListener('change', async () => renderCard(await cardEngine()));
+
+// 各項目の上位 3 頭（件数 10 以上）を強調
+function topKeys(runners, get) {
+  return new Set(runners.filter((r) => !r.status && get(r) != null && (get.n ? get.n(r) >= BD_FEW : true))
+    .sort((a, b) => get(b) - get(a)).slice(0, 3).map((r) => r.seq));
+}
+
+function statLine(s, best = {}) {
+  if (!s.runs) return '<div class="pstat few">データなし</div>';
+  const b = (key, text) => (best[key] ? `<span class="best">${text}</span>` : text);
+  return `<div class="pstat ${s.runs < BD_FEW ? 'few' : ''}"><span>勝率 ${b('win', pct(s.winRate))}</span>・<span>複勝率 ${b('place', pct(s.placeRate))}</span>・<span>単回 ${b('rec', pct(s.winRecovery))} (${s.runs})</span></div>`;
+}
+
+function renderCard(e) {
+  const c = e.card(cv.raceId, { scope: $('#cardScope').value });
+  if (!c) { $('#cardBody').hidden = true; return; }
+  $('#cardBody').hidden = false;
+  const r = c.race;
+  const grade = r.grade ? `<span class="status-tag" style="color:var(--accent)">${GRADE_LABEL[r.grade] || r.grade}</span>` : '';
+  const cls = CLASS_LIST.find((x) => x.key === r.cls)?.label ?? '';
+  $('#cardTitle').innerHTML = `${esc(r.venue)}${r.race_no}R ${esc(r.race_name)}${grade}<small>${fmtDay(r.date)}${r.post_time ? ' ' + r.post_time + ' 発走' : ''}／${SURFACES[r.surface] || ''} ${r.distance}m／${esc(cls)}／${r.headcount}頭</small>`;
+
+  const runners = c.runners.map((x, i) => ({ ...x, seq: i + 1 }));
+  const jw = (x) => x.jockey.runs ? x.jockey.winRate : null; jw.n = (x) => x.jockey.runs;
+  const jp = (x) => x.jockey.runs ? x.jockey.placeRate : null; jp.n = jw.n;
+  const jr = (x) => x.jockey.runs ? x.jockey.winRecovery : null; jr.n = jw.n;
+  const tw = (x) => x.trainer.runs ? x.trainer.winRate : null; tw.n = (x) => x.trainer.runs;
+  const tp = (x) => x.trainer.runs ? x.trainer.placeRate : null; tp.n = tw.n;
+  const tr = (x) => x.trainer.runs ? x.trainer.winRecovery : null; tr.n = tw.n;
+  const best = {
+    jWin: topKeys(runners, jw), jPlace: topKeys(runners, jp), jRec: topKeys(runners, jr),
+    tWin: topKeys(runners, tw), tPlace: topKeys(runners, tp), tRec: topKeys(runners, tr),
+  };
+
+  const sorters = {
+    seq: (a, b) => a.seq - b.seq,
+    odds: (a, b) => (a.odds ?? 9999) - (b.odds ?? 9999),
+    jWin: (a, b) => (jw(b) ?? -1) - (jw(a) ?? -1),
+    jRec: (a, b) => (jr(b) ?? -1) - (jr(a) ?? -1),
+    tWin: (a, b) => (tw(b) ?? -1) - (tw(a) ?? -1),
+    hPlace: (a, b) => (b.horse.runs ? b.horse.placeRate : -1) - (a.horse.runs ? a.horse.placeRate : -1),
+  };
+  runners.sort(sorters[$('#cardSort').value] || sorters.seq);
+
+  const scopeLabel = CARD_SCOPES.find((s) => s.key === c.scope)?.label ?? '';
+  const link = (kind, id, name) => id ? `<a href="#" data-sim="${kind}" data-id="${esc(id)}" data-name="${esc(name)}">${esc(name)}</a>` : esc(name || '-');
+  const formHtml = (list) => list.length
+    ? `<div class="form">${list.map((x) => `<span class="fin ${x.finish_num && x.finish_num <= 3 ? 'f' + x.finish_num : ''}" title="${esc(`${x.date} ${x.venue} ${x.race_name || ''} ${SURFACES[x.surface] || ''}${x.distance}m ${x.popularity ? x.popularity + '番人気' : ''} ${x.jockey_name || ''}`)}">${esc(x.finish_num ?? x.finish)}</span>`).join('')}</div>`
+    : '<div class="sub2">出走データなし（新馬など）</div>';
+  const rec = (s) => `${s.first}-${s.second}-${s.third}-${s.runs - s.first - s.second - s.third}`;
+
+  $('#cardTable').innerHTML = `<table class="ctable"><thead><tr><th>馬番</th><th>馬名</th><th>単勝</th><th>騎手（${esc(scopeLabel)}）</th><th>調教師（${esc(scopeLabel)}）</th><th>馬の成績・近走（新しい順）</th></tr></thead><tbody>${
+    runners.map((x) => `<tr class="${x.status ? 'scratched' : ''}">
+      <td class="c-no"><span class="waku w${x.frame_no || 0}">${x.horse_no ?? '-'}</span></td>
+      <td class="c-horse"><div class="hname">${link('horse', x.horse_id, x.horse_name)}${x.status ? `<span class="status-tag">${esc(x.status)}</span>` : ''}</div>
+        <div class="sub2">${esc(x.sex_age || '')} ${x.weight_carried ? x.weight_carried.toFixed(1) + 'kg' : ''}${x.horse_no == null ? '・枠順未定' : ''}</div></td>
+      <td class="c-odds odds">${x.odds ? `<b>${x.odds.toFixed(1)}</b><div class="sub2">${x.pop ? x.pop + '番人気' : ''}</div>` : '<span class="sub2">-</span>'}</td>
+      <td class="c-j" data-label="騎手"><div class="pname">${link('jockey', x.jockey_id, x.jockey_name)}</div>${statLine(x.jockey, { win: best.jWin.has(x.seq), place: best.jPlace.has(x.seq), rec: best.jRec.has(x.seq) })}</td>
+      <td class="c-t" data-label="調教師"><div class="pname">${link('trainer', x.trainer_id, x.trainer_name)}</div>${statLine(x.trainer, { win: best.tWin.has(x.seq), place: best.tPlace.has(x.seq), rec: best.tRec.has(x.seq) })}</td>
+      <td class="c-h" data-label="馬"><div class="pstat">全 ${x.horse.runs ? rec(x.horse) : '-'}・同条件 ${x.horseCond.runs ? rec(x.horseCond) : '-'}</div>${formHtml(x.form)}</td>
+    </tr>`).join('')}</tbody></table>`;
+  cv.last = c;
+}
+
+// 名前をタップ → その条件（出馬表の範囲・期間）で収支シミュレーターを開く
+$('#cardTable').addEventListener('click', (ev) => {
+  const a = ev.target.closest('a[data-sim]');
+  if (!a || !cv.last) return;
+  ev.preventDefault();
+  const { sim: kind, id, name } = a.dataset;
+  f.kind.value = kind;
+  f.q.value = name;
+  state.picked = { kind, id, name };
+  f.from.value = cv.last.range.from < (engine?.meta.firstDate ?? '') ? engine.meta.firstDate : cv.last.range.from;
+  f.to.value = cv.last.range.to;
+  const fl = kind === 'horse' ? {} : cv.last.filters;
+  for (const k of ['surface', 'venue', 'dist', 'pop', 'cond', 'cls']) f[k].value = fl[k] && [...f[k].options].some((o) => o.value === fl[k]) ? fl[k] : 'all';
+  updateFilterCount();
+  $('#filters').open = ['venue', 'dist'].some((k) => f[k].value !== 'all');
+  showView('sim');
+  f.requestSubmit();
+  window.scrollTo({ top: 0 });
+});
+
+// ローカル版：出馬表・オッズを今すぐ取り直す
+$('#cardRefresh').addEventListener('click', async () => {
+  const btn = $('#cardRefresh');
+  btn.disabled = true;
+  try {
+    await api('api/cards/refresh', { method: 'POST' });
+    while (true) {
+      const s = await api('api/status');
+      $('#cardInfo').textContent = `更新中… ${s.sync.waiting || s.sync.message}`;
+      if (!s.sync.running) break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    await openCards(true);
+  } catch (err) { alert(err.message); }
+  finally { btn.disabled = false; }
+});
+
+await init();
+if (location.hash === '#card') showView('card');
+window.addEventListener('hashchange', () => showView(location.hash === '#card' ? 'card' : 'sim'));
 </script>
 </body>
 </html>

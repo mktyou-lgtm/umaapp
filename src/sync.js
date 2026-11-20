@@ -1,6 +1,6 @@
 // 期間指定の差分同期。DB に無い開催だけを JRA 公式サイトから取得する。
 import { db, tx } from './db.js';
-import { fetchMonth, fetchMeeting, fetchMeetingResults, fetchPeopleList, fetchKana, hooks } from './jra.js';
+import { fetchMonth, fetchMeeting, fetchMeetingResults, fetchPeopleList, fetchKana, fetchCardMeetings, fetchCards, hooks } from './jra.js';
 import { normalizeName } from '../public/sim.js';
 
 export const status = {
@@ -165,6 +165,43 @@ async function syncMeeting(m, today) {
   q.markMeeting.run(complete ? 1 : 0, now(), m.key);
 }
 
+// ---- 出馬表 ----
+const CARD_REFRESH_MS = 30 * 60e3; // 出馬表（オッズ・取消）は 30 分ごとまで取り直す
+const qc = {
+  delOld: db.prepare('DELETE FROM cards WHERE date < ?'),
+  delRace: db.prepare('DELETE FROM cards WHERE race_id = ?'),
+  delEntries: db.prepare('DELETE FROM card_entries WHERE race_id = ?'),
+  insCard: db.prepare(`INSERT INTO cards (race_id, date, venue_code, venue, race_no, name, surface, distance, class_text, grade, post_time, headcount, fetched_at)
+    VALUES (:race_id, :date, :venue_code, :venue, :race_no, :name, :surface, :distance, :class_text, :grade, :post_time, :headcount, :fetched_at)`),
+  insEntry: db.prepare(`INSERT INTO card_entries (race_id, seq, horse_no, frame_no, horse_id, horse_name, sex_age, weight_carried, jockey_id, jockey_name, trainer_id, trainer_name, odds, status)
+    VALUES (:race_id, :seq, :horse_no, :frame_no, :horse_id, :horse_name, :sex_age, :weight_carried, :jockey_id, :jockey_name, :trainer_id, :trainer_name, :odds, :status)`),
+};
+
+/** 出馬表を取得（force でなければ 30 分以内の再取得はしない）。結果が出たレースの分は消す。 */
+export async function syncCards({ force = false } = {}) {
+  const today = todayJST();
+  qc.delOld.run(today);
+  const last = q.getMeta.get('cards_at')?.value;
+  if (!force && last && Date.now() - Date.parse(last) < CARD_REFRESH_MS) return;
+  status.message = '出馬表を取得中';
+  const meetings = (await fetchCardMeetings()).filter((m) => m.date >= today);
+  for (const m of meetings) {
+    status.message = `${m.date} ${m.venue} の出馬表を取得中`;
+    const cards = await fetchCards(m);
+    tx(() => {
+      for (const { race, entries } of cards) {
+        qc.delEntries.run(race.race_id);
+        qc.delRace.run(race.race_id);
+        qc.insCard.run({ ...race, fetched_at: now() });
+        entries.forEach((e, i) => qc.insEntry.run({ ...e, seq: i + 1, race_id: race.race_id }));
+      }
+    });
+  }
+  // 結果が取り込まれたレースは出馬表から外す
+  db.exec('DELETE FROM cards WHERE race_id IN (SELECT race_id FROM races)');
+  q.setMeta.run('cards_at', now());
+}
+
 /**
  * 保存する項目を増やしたときの取り直し。DATA_VERSION を上げると、取得済みの開催を
  * 未完了に戻して次回の同期で結果ページを 1 回ずつ取り直す（進み具合は meetings.complete が持つ）。
@@ -181,13 +218,13 @@ function migrate() {
 }
 
 /** from〜to（YYYY-MM-DD）の不足データを取得する。実行中なら現在のジョブを返す。 */
-export function startSync(from, to) {
+export function startSync(from, to, opts = {}) {
   if (status.running) return status;
   const today = todayJST();
   if (to > today) to = today;
   Object.assign(status, {
     running: true, phase: 'calendar', from, to, daysTotal: 0, daysDone: 0, racesFetched: 0,
-    currentDate: null, message: '開始', error: null, startedAt: now(), finishedAt: null, waiting: null,
+    currentDate: null, message: '開始', error: null, cardsError: null, startedAt: now(), finishedAt: null, waiting: null,
   });
   (async () => {
     try {
@@ -202,10 +239,12 @@ export function startSync(from, to) {
           await syncMeeting(m, today);
           status.daysDone++;
         }
-        // 読み仮名は検索の補助なので、失敗してもレース結果の取得は成功扱いにする
+        // 読み仮名・出馬表は補助なので、失敗してもレース結果の取得は成功扱いにする
         status.phase = 'people';
         try { await syncPeople(); } catch (e) { console.error('読み仮名の取得に失敗:', e); }
       }
+      status.phase = 'cards';
+      try { await syncCards({ force: opts.forceCards }); } catch (e) { console.error('出馬表の取得に失敗:', e); status.cardsError = String(e?.message || e); }
       status.phase = 'done';
       status.message = status.racesFetched ? `${status.racesFetched} レースを新規取得しました` : 'データは最新です';
     } catch (e) {
