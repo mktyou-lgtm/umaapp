@@ -37,7 +37,11 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/api/simulate') {
       const { from, to } = range(p);
-      return json(res, 200, simulate({ kind: p.get('kind') || 'jockey', id: p.get('id'), from, to, bet: p.get('bet') || '単勝', stake: p.get('stake') || 100 }));
+      const filters = Object.fromEntries(['surface', 'venue', 'dist', 'pop', 'cond', 'cls'].map((k) => [k, p.get(k) || 'all']));
+      return json(res, 200, simulate({
+        kind: p.get('kind') || 'jockey', id: p.get('id'), from, to,
+        bet: p.get('bet') || '単勝', stake: p.get('stake') || 100, ...filters,
+      }));
     }
     if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' });
 

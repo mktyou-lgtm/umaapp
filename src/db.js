@@ -34,6 +34,22 @@ CREATE TABLE IF NOT EXISTS meetings (
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_date ON meetings(date);
 
+-- 騎手・調教師（読み仮名検索用）
+CREATE TABLE IF NOT EXISTS people (
+  kind TEXT NOT NULL,             -- jockey / trainer
+  id TEXT NOT NULL,               -- '05339'
+  name TEXT,
+  kana TEXT,                      -- 読み（カタカナ・空白なし）。'' = 取得したが無し、NULL = 未取得
+  cname TEXT,                     -- プロフィールページ
+  fetched_at TEXT,
+  PRIMARY KEY (kind, id)
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
 CREATE TABLE IF NOT EXISTS races (
   race_id TEXT PRIMARY KEY,       -- 202606010101 (年+場+回+日+R)
   date TEXT NOT NULL,
@@ -83,6 +99,10 @@ CREATE TABLE IF NOT EXISTS payouts (
   PRIMARY KEY (race_id, bet_type, combination)
 );
 `);
+
+// 列の追加（既存の DB を作り直さずに済むように）
+const hasColumn = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
+if (!hasColumn('races', 'grade')) db.exec('ALTER TABLE races ADD COLUMN grade TEXT'); // 'G1' 'G2' 'G3' 'JG1' 'L' など
 
 export function tx(fn) {
   db.exec('BEGIN');

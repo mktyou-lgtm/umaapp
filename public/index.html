@@ -47,6 +47,7 @@ input[name=q] { width: 200px; } input[type=number] { width: 90px; }
 @media (hover: hover) { .ac-list li:hover { background: var(--chip); } }
 .ac-list li small { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ac-list li mark { background: none; color: inherit; font-weight: 700; }
+.ac-list li small.yomi { margin-left: 6px; color: var(--muted); }
 .ac-list li.ac-empty { cursor: default; color: var(--muted); font-size: 13px; }
 button { background: var(--accent); border-color: var(--accent); color: #fff; padding: 7px 18px; cursor: pointer; font-weight: 600; }
 button:disabled { opacity: .6; cursor: default; }
@@ -84,6 +85,23 @@ tr.refund td { color: var(--muted); }
 .tabs .chip { cursor: pointer; }
 .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
 #result { display: none; }
+/* 絞り込み条件 */
+.filters { flex-basis: 100%; border-top: 1px solid var(--grid); padding-top: 10px; }
+.filters summary { cursor: pointer; font-size: 13px; color: var(--ink-2); font-weight: 600; }
+.fcount { color: var(--accent); font-weight: 600; }
+.filter-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-top: 10px; }
+.linkbtn { background: none; border: none; color: var(--accent); padding: 6px 4px; font-weight: normal; font-size: 13px; }
+/* 条件別成績 */
+.bd-tabs { flex-wrap: wrap; align-items: center; }
+.hscroll { overflow-x: auto; }
+#bd tr[data-filter] { cursor: pointer; }
+@media (hover: hover) { #bd tr[data-filter]:hover td { background: var(--chip); } }
+#bd tr.few td { color: var(--muted); }
+#bd tr.few td.up, #bd tr.few td.down { color: var(--muted); }
+#bd td.rec { font-weight: 700; }
+/* スマホでは着別度数を省いて回収率まで横スクロールなしで見えるように */
+@media (max-width: 600px) { #bd .hide-sm { display: none; } #bd th, #bd td { padding: 5px 6px; } }
+#bd tr.current td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 </style>
 </head>
 <body>
@@ -101,7 +119,7 @@ tr.refund td { color: var(--muted); }
         </select>
       </label>
       <div class="field">
-        <label for="q">名前（入力すると候補を表示）</label>
+        <label for="q">名前（ひらがな可・入力すると候補を表示）</label>
         <div class="ac">
           <input id="q" name="q" value="ルメール" required autocomplete="off" spellcheck="false"
             role="combobox" aria-autocomplete="list" aria-controls="acList" aria-expanded="false">
@@ -110,11 +128,29 @@ tr.refund td { color: var(--muted); }
       </div>
       <label>開始日<input type="date" name="from"></label>
       <label>終了日<input type="date" name="to"></label>
+      <label>コース
+        <select name="surface">
+          <option value="all">両方</option>
+          <option value="芝">芝</option>
+          <option value="ダ">ダート</option>
+        </select>
+      </label>
       <label>券種
         <select name="bet"><option>単勝</option><option>複勝</option></select>
       </label>
       <label>1レースの購入額<input type="number" name="stake" value="100" min="100" step="100"></label>
       <button id="go">計算する</button>
+      <details class="filters" id="filters">
+        <summary>絞り込み条件 <span class="fcount" id="filterCount"></span></summary>
+        <div class="filter-row">
+          <label>競馬場<select name="venue"></select></label>
+          <label>距離<select name="dist"></select></label>
+          <label>人気<select name="pop"></select></label>
+          <label>馬場状態<select name="cond"></select></label>
+          <label>クラス<select name="cls"></select></label>
+          <button type="button" class="linkbtn" id="clearFilters">条件をクリア</button>
+        </div>
+      </details>
     </form>
     <div class="chips" id="cands"></div>
     <div class="banner" id="banner"><span id="bannerText"></span><div class="bar"><div id="bannerBar"></div></div></div>
@@ -135,6 +171,11 @@ tr.refund td { color: var(--muted); }
       </div>
     </div>
     <div class="card">
+      <div class="tabs bd-tabs" id="bdTabs" role="tablist"><span class="title" style="margin:0 8px 0 0">条件別成績</span></div>
+      <div class="hscroll" id="bd"></div>
+      <p class="note">勝率・複勝率（3着以内）は着順から、回収率・収支は選んだ券種で計算。件数が 10 未満の行は薄く表示しています（数が少なく偶然の影響が大きいため）。行をタップするとその条件で絞り込みます。</p>
+    </div>
+    <div class="card">
       <p class="title">レース一覧 <small id="rcount"></small></p>
       <div class="scroll" id="races"></div>
       <p class="note">払戻は JRA 公式の払戻金（100 円あたり）から算出。単勝オッズは公式の成績表に無いため勝ち馬のみ表示（払戻金 ÷ 100）。取消・除外は返還のため購入数に含めません（競走中止・失格はハズレ扱い）。</p>
@@ -143,9 +184,43 @@ tr.refund td { color: var(--muted); }
 </main>
 
 <script type="module">
-import { createStaticEngine, normalizeName } from './sim.js';
+import {
+  createStaticEngine, normalizeName, toHiragana, toKatakana,
+  VENUE_LIST, DIST_BANDS, POP_BANDS, CONDITIONS, CLASS_LIST, CLASS_EXTRA, SURFACES,
+} from './sim.js';
 const $ = (s) => document.querySelector(s);
 const f = $('#f');
+
+// ---- 絞り込み条件 ----
+const FILTER_KEYS = ['surface', 'venue', 'dist', 'pop', 'cond', 'cls'];
+const FILTER_OPTIONS = {
+  venue: VENUE_LIST.map((v) => ({ key: v, label: v })),
+  dist: DIST_BANDS,
+  pop: POP_BANDS,
+  cond: CONDITIONS.map((c) => ({ key: c, label: c })),
+  cls: [...CLASS_LIST, ...CLASS_EXTRA],
+};
+for (const [name, opts] of Object.entries(FILTER_OPTIONS)) {
+  f[name].innerHTML = '<option value="all">すべて</option>' + opts.map((o) => `<option value="${o.key}">${o.label}</option>`).join('');
+}
+// 結果タイトルなどに出す条件の文字列
+function filterLabels(fl) {
+  const out = [];
+  if (fl.surface && fl.surface !== 'all') out.push(SURFACES[fl.surface] + 'のみ');
+  for (const k of ['venue', 'dist', 'pop', 'cond', 'cls']) {
+    if (fl[k] && fl[k] !== 'all') out.push(FILTER_OPTIONS[k].find((o) => String(o.key) === String(fl[k]))?.label ?? fl[k]);
+  }
+  return out;
+}
+function updateFilterCount() {
+  const n = ['venue', 'dist', 'pop', 'cond', 'cls'].filter((k) => f[k].value !== 'all').length;
+  $('#filterCount').textContent = n ? `（${n}件 指定中）` : '';
+}
+['venue', 'dist', 'pop', 'cond', 'cls'].forEach((k) => f[k].addEventListener('change', updateFilterCount));
+$('#clearFilters').addEventListener('click', () => {
+  ['venue', 'dist', 'pop', 'cond', 'cls'].forEach((k) => { f[k].value = 'all'; });
+  updateFilterCount();
+});
 const yen = (v) => (v < 0 ? '-' : '') + Math.abs(Math.round(v)).toLocaleString('ja-JP') + '円';
 const signedYen = (v) => (v > 0 ? '+' : '') + yen(v);
 const pct = (v) => (v == null ? '-' : (v * 100).toFixed(1) + '%');
@@ -169,8 +244,8 @@ const backend = {
     ? engine.candidates(p.kind, p.q, p.from, p.to)
     : (await api('api/candidates?' + new URLSearchParams({ kind: p.kind, q: p.q, from: p.from, to: p.to }))).candidates,
   simulate: async (p, id) => engine
-    ? engine.simulate({ kind: p.kind, id, from: p.from, to: p.to, bet: p.bet, stake: p.stake })
-    : api('api/simulate?' + new URLSearchParams({ kind: p.kind, id, from: p.from, to: p.to, bet: p.bet, stake: p.stake })),
+    ? engine.simulate({ kind: p.kind, id, from: p.from, to: p.to, bet: p.bet, stake: p.stake, ...p.filters })
+    : api('api/simulate?' + new URLSearchParams({ kind: p.kind, id, from: p.from, to: p.to, bet: p.bet, stake: p.stake, ...p.filters })),
 };
 let ready = false; // データ（または API）が使える状態か
 
@@ -190,14 +265,19 @@ function acClose() {
 // 入力文字に一致する部分を太字に（正規化で位置がずれる場合はそのまま表示）
 function highlight(name, q) {
   const n = normalizeName(q);
-  const i = n ? name.indexOf(n) : -1;
+  // ひらがな→カタカナは 1 文字対応なので、カタカナに揃えた名前で位置を探して元の名前を切り出す
+  const i = n ? toKatakana(name).indexOf(n) : -1;
   return i < 0 ? esc(name) : esc(name.slice(0, i)) + '<mark>' + esc(name.slice(i, i + n.length)) + '</mark>' + esc(name.slice(i + n.length));
 }
 
 function acRender(q) {
   const unit = RIDE_UNIT[f.kind.value];
+  // 読み仮名で一致した候補は、読みをひらがなで添える（例: 川田将雅 かわだゆうが）
+  const label = (c) => c.by === 'kana'
+    ? `${esc(c.name)} <small class="yomi">${highlight(toHiragana(c.kana), toHiragana(normalizeName(q)))}</small>`
+    : highlight(c.name, q);
   acList.innerHTML = ac.items.length
-    ? ac.items.map((c, i) => `<li role="option" id="ac-${i}" data-i="${i}" class="${i === ac.active ? 'active' : ''}" aria-selected="${i === ac.active}"><span>${highlight(c.name, q)}</span><small>${unit} ${c.rides.toLocaleString()}</small></li>`).join('')
+    ? ac.items.map((c, i) => `<li role="option" id="ac-${i}" data-i="${i}" class="${i === ac.active ? 'active' : ''}" aria-selected="${i === ac.active}"><span>${label(c)}</span><small>${unit} ${c.rides.toLocaleString()}</small></li>`).join('')
     : `<li class="ac-empty" aria-disabled="true">該当する${f.kind.selectedOptions[0].text}はいません（期間内）</li>`;
   acList.hidden = false;
   qInput.setAttribute('aria-expanded', 'true');
@@ -258,7 +338,10 @@ f.kind.addEventListener('change', () => { state.picked = null; acClose(); });
 
 function params() {
   const fd = new FormData(f);
-  return { kind: fd.get('kind'), q: fd.get('q').trim(), from: fd.get('from'), to: fd.get('to'), bet: fd.get('bet'), stake: fd.get('stake') };
+  return {
+    kind: fd.get('kind'), q: fd.get('q').trim(), from: fd.get('from'), to: fd.get('to'), bet: fd.get('bet'), stake: fd.get('stake'),
+    filters: Object.fromEntries(FILTER_KEYS.map((k) => [k, fd.get(k) || 'all'])),
+  };
 }
 
 async function init() {
@@ -381,6 +464,55 @@ $('#cands').addEventListener('click', (e) => {
   compute(state.lastParams);
 });
 
+// ---- 条件別成績 ----
+const BD_FILTER = { venue: 'venue', surface: 'surface', dist: 'dist', pop: 'pop', cond: 'cond', cls: 'cls' }; // 行タップで絞り込める区分
+const BD_FEW = 10; // これ未満の件数は参考値として薄く表示
+let bdTab = 'venue';
+
+function renderBreakdown(d) {
+  const bd = d.breakdown || {};
+  if (!bd[bdTab]) bdTab = 'venue';
+  $('#bdTabs').innerHTML = '<span class="title" style="margin:0 8px 0 0">条件別成績</span>' + Object.entries(bd).map(([k, g]) =>
+    `<button type="button" class="chip ${k === bdTab ? 'active' : ''}" role="tab" aria-selected="${k === bdTab}" data-bd="${k}">${g.label}</button>`).join('');
+  const g = bd[bdTab];
+  if (!g || !g.rows.length) { $('#bd').innerHTML = '<p class="note">該当するレースがありません</p>'; return; }
+  const fk = BD_FILTER[bdTab];
+  const current = fk ? (d.filters || {})[fk] : null;
+  $('#bd').innerHTML = `<table><tr><th class="l">${g.label}</th><th>件数</th><th class="hide-sm">着別度数</th><th>勝率</th><th>複勝率</th><th>回収率</th><th>収支</th></tr>${
+    g.rows.map((r) => {
+      const few = r.bets < BD_FEW;
+      // 絞り込みの選択肢にある値の行だけタップ可能（例: コースの「障害」は選択肢に無い）
+      const canFilter = fk && [...f[fk].options].some((o) => o.value === String(r.key));
+      const attrs = canFilter ? ` data-filter="${fk}" data-value="${esc(r.key)}" title="この条件で絞り込む"` : '';
+      const isCur = current && current !== 'all' && String(current) === String(r.key);
+      return `<tr class="${few ? 'few' : ''} ${isCur ? 'current' : ''}"${attrs}>
+        <td class="l">${esc(r.label)}</td><td>${r.bets}</td>
+        <td class="hide-sm">${r.first}-${r.second}-${r.third}-${r.bets - r.first - r.second - r.third}</td>
+        <td>${pct(r.winRate)}</td><td>${pct(r.placeRate)}</td>
+        <td class="rec ${r.recovery >= 1 ? 'up' : ''}">${pct(r.recovery)}</td>
+        <td class="${cls(r.profit)}">${signedYen(r.profit)}</td></tr>`;
+    }).join('')}</table>`;
+}
+
+$('#bdTabs').addEventListener('click', (e) => {
+  const k = e.target.closest('[data-bd]')?.dataset.bd;
+  if (!k || !state.data) return;
+  bdTab = k;
+  renderBreakdown(state.data);
+});
+
+// 行をタップ → その条件で絞り込んで再計算
+$('#bd').addEventListener('click', async (e) => {
+  const tr = e.target.closest('tr[data-filter]');
+  if (!tr || !state.lastParams) return;
+  const sel = f[tr.dataset.filter];
+  sel.value = sel.value === tr.dataset.value ? 'all' : tr.dataset.value; // もう一度タップで解除
+  updateFilterCount();
+  if (sel.name !== 'surface' && sel.value !== 'all') $('#filters').open = true;
+  state.lastParams = { ...state.lastParams, filters: params().filters };
+  await compute(state.lastParams);
+});
+
 document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
   document.querySelectorAll('[data-view]').forEach((x) => x.classList.toggle('active', x === b));
   const table = b.dataset.view === 'table';
@@ -391,7 +523,10 @@ document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('clic
 function render(d) {
   $('#result').style.display = 'block';
   const s = d.summary;
-  $('#rtitle').innerHTML = `${esc(d.name)}<small>${d.kindLabel}／${d.from} 〜 ${d.to}／${d.bet} ${d.stakePerBet.toLocaleString()}円ずつ</small>`;
+  const conds = filterLabels(d.filters || {});
+  const condText = conds.length ? conds.join('・') : '全レース（芝・ダート両方）';
+  $('#rtitle').innerHTML = `${esc(d.name)}<small>${d.kindLabel}／${d.from} 〜 ${d.to}／${esc(condText)}／${d.bet} ${d.stakePerBet.toLocaleString()}円ずつ</small>`;
+  renderBreakdown(d);
   $('#tiles').innerHTML = [
     ['収支', `<span class="${cls(s.profit)}">${signedYen(s.profit)}</span>`, `投資 ${yen(s.stake)} → 払戻 ${yen(s.ret)}`, 'hero'],
     ['回収率', pct(s.recovery), s.recovery == null ? '' : s.recovery >= 1 ? 'プラス収支' : 'マイナス収支'],

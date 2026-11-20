@@ -23,20 +23,28 @@ let lastRequest = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sjis = new TextDecoder('shift_jis');
 
-async function fetchPage(cname, attempt = 1, blocked = 0) {
+/**
+ * ページ取得。cname を渡すと JRADB へ POST、url を渡すと GET。
+ * @param {{ cname?: string, path?: string, url?: string }} target
+ */
+async function fetchPage(target, attempt = 1, blocked = 0) {
+  if (typeof target === 'string') target = { cname: target };
+  const label = target.cname || target.url;
   // 一定間隔 + ゆらぎ（機械的な等間隔アクセスを避ける）
   const wait = lastRequest + MIN_INTERVAL_MS * (0.8 + Math.random() * 0.6) - Date.now();
   if (wait > 0) await sleep(wait);
   lastRequest = Date.now();
   let res;
   try {
-    res = await fetch(BASE, {
-      method: 'POST',
-      headers: { 'User-Agent': UA, 'Accept-Language': 'ja', 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ cname }),
-    });
+    res = target.url
+      ? await fetch(target.url, { headers: { 'User-Agent': UA, 'Accept-Language': 'ja' } })
+      : await fetch(target.path ? `https://www.jra.go.jp/JRADB/${target.path}` : BASE, {
+        method: 'POST',
+        headers: { 'User-Agent': UA, 'Accept-Language': 'ja', 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ cname: target.cname }),
+      });
   } catch (e) {
-    if (attempt < 3) { await sleep(5000 * attempt); return fetchPage(cname, attempt + 1, blocked); }
+    if (attempt < 3) { await sleep(5000 * attempt); return fetchPage(target, attempt + 1, blocked); }
     throw e;
   }
   if ([503, 429, 403].includes(res.status) && blocked < BLOCK_WAIT_MIN.length) {
@@ -45,17 +53,48 @@ async function fetchPage(cname, attempt = 1, blocked = 0) {
     hooks.onWait?.(`JRA サイトから一時的にアクセスを制限されています（HTTP ${res.status}）。${until} 頃に再開します`);
     await sleep(min * 60e3);
     hooks.onWait?.(null);
-    return fetchPage(cname, attempt, blocked + 1);
+    return fetchPage(target, attempt, blocked + 1);
   }
   if (!res.ok) {
-    if (attempt < 3 && res.status >= 500) { await sleep(5000 * attempt); return fetchPage(cname, attempt + 1, blocked); }
-    throw new Error(`HTTP ${res.status}: ${cname}`);
+    if (attempt < 3 && res.status >= 500) { await sleep(5000 * attempt); return fetchPage(target, attempt + 1, blocked); }
+    throw new Error(`HTTP ${res.status}: ${label}`);
   }
   const html = sjis.decode(Buffer.from(await res.arrayBuffer()));
   if (/パラメータエラー|不正なアクセス/.test(html.slice(0, 5000)) && !html.includes('race_result')) {
-    throw new Error(`JRA サイトがページを返しませんでした: ${cname}`);
+    throw new Error(`JRA サイトがページを返しませんでした: ${label}`);
   }
   return html;
+}
+
+// 騎手・調教師のプロフィール（読み仮名用）
+const PEOPLE = {
+  jockey: { meikan: 'https://www.jra.go.jp/datafile/meikan/jockey.html', path: 'accessK.html', list: /pw04knl[0-9A-Z]+\/[0-9A-F]{2}/g, profile: /pw04kmk(\d+)\/[0-9A-F]{2}/ },
+  trainer: { meikan: 'https://www.jra.go.jp/datafile/meikan/trainer.html', path: 'accessC.html', list: /pw05cnl[0-9A-Z]+\/[0-9A-F]{2}/g, profile: /pw05cmk(\d+)\/[0-9A-F]{2}/ },
+};
+
+/** 現役の騎手・調教師の一覧（名鑑の五十音別ページを辿る）→ [{ id, name, cname }] */
+export async function fetchPeopleList(kind) {
+  const P = PEOPLE[kind];
+  const index = await fetchPage({ url: P.meikan });
+  const pages = [...new Set(index.match(P.list) || [])];
+  const people = new Map();
+  for (const cname of pages) {
+    const $ = cheerio.load(await fetchPage({ cname, path: P.path }));
+    $('a[onclick]').each((_, a) => {
+      const m = ($(a).attr('onclick') || '').match(P.profile);
+      if (!m) return;
+      const id = m[1].slice(-5);
+      people.set(id, { id, name: nospace($(a).find('.txt').text() || $(a).text()), cname: m[0] });
+    });
+  }
+  return [...people.values()];
+}
+
+/** プロフィールページから読み仮名（カタカナ・空白なし）。見つからなければ '' */
+export async function fetchKana(kind, cname) {
+  const html = await fetchPage({ cname, path: PEOPLE[kind].path });
+  const kana = cheerio.load(html)('.kana').first().text();
+  return nospace(kana).replace(/[（）()・]/g, '');
 }
 
 const ymd = (s) => `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
@@ -106,6 +145,7 @@ export async function fetchMeetingResults(sesCname, meeting) {
     if (!raceNo) return;
 
     const entries = [];
+    const people = []; // 騎手・調教師のプロフィールページ（読み仮名取得用）
     unit.find('table tbody tr').each((_, tr) => {
       const row = $(tr);
       const placeTd = row.children('td.place');
@@ -116,6 +156,10 @@ export async function fetchMeetingResults(sesCname, meeting) {
       const trainerA = row.children('td.trainer').find('a').first();
       const horseA = row.children('td.horse').find('a').first();
       const code = (el, re) => (el.attr('onclick') || el.attr('href') || '').match(re)?.[1] ?? null;
+      for (const [kind, a] of [['jockey', jockeyA], ['trainer', trainerA]]) {
+        const m = (a.attr('onclick') || '').match(PEOPLE[kind].profile);
+        if (m) people.push({ kind, id: m[1].slice(-5), name: nospace(a.text()), cname: m[0] });
+      }
       entries.push({
         horse_no: intOrNull(row.children('td.num').text()),
         frame_no: intOrNull(row.children('td.waku').find('img').attr('alt')?.match(/\d+/)?.[0]),
@@ -156,6 +200,10 @@ export async function fetchMeetingResults(sesCname, meeting) {
     }
 
     const typeCell = (c) => nospace(unit.find(`.race_title .type .cell.${c}`).first().text());
+    // 格付けはアイコン画像の alt（「GⅠ」「J・GⅡ」「リステッド」など）→ 'G1' 'JG2' 'L'
+    const gradeAlt = norm(unit.find('.race_title .race_name .grade_icon img').first().attr('alt'));
+    const g = gradeAlt.replace(/[・\s]/g, '').match(/^(J?)G(I{1,3})$/);
+    const grade = g ? `${g[1]}G${g[2].length}` : /リステッド/.test(gradeAlt) ? 'L' : null;
     const courseText = norm(unit.find('.race_title .cell.course').first().text());
     const name = nospace(unit.find('.race_title .race_name').first().text()) || null;
     const category = typeCell('category');
@@ -175,10 +223,12 @@ export async function fetchMeetingResults(sesCname, meeting) {
         weather: nospace(baba.filter('.weather').find('.txt').text()) || null,
         track_condition: nospace(baba.not('.weather').first().find('.txt').text()) || null,
         class_text: [category, typeCell('class'), typeCell('rule'), typeCell('weight')].filter(Boolean).join(' ') || null,
+        grade,
         headcount: entries.length,
       },
       entries,
       payouts,
+      people,
     });
   });
   return out;

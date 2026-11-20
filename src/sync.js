@@ -1,6 +1,7 @@
 // 期間指定の差分同期。DB に無い開催だけを JRA 公式サイトから取得する。
 import { db, tx } from './db.js';
-import { fetchMonth, fetchMeeting, fetchMeetingResults, hooks } from './jra.js';
+import { fetchMonth, fetchMeeting, fetchMeetingResults, fetchPeopleList, fetchKana, hooks } from './jra.js';
+import { normalizeName } from '../public/sim.js';
 
 export const status = {
   running: false,
@@ -52,8 +53,8 @@ const q = {
   setSes: db.prepare('UPDATE meetings SET ses_cname = ?, races_expected = ? WHERE key = ?'),
   markMeeting: db.prepare('UPDATE meetings SET complete = ?, fetched_at = ? WHERE key = ?'),
   insRace: db.prepare(`INSERT OR REPLACE INTO races
-    (race_id, date, venue_code, venue, race_no, name, surface, distance, weather, track_condition, class_text, headcount, fetched_at)
-    VALUES (:race_id, :date, :venue_code, :venue, :race_no, :name, :surface, :distance, :weather, :track_condition, :class_text, :headcount, :fetched_at)`),
+    (race_id, date, venue_code, venue, race_no, name, surface, distance, weather, track_condition, class_text, grade, headcount, fetched_at)
+    VALUES (:race_id, :date, :venue_code, :venue, :race_no, :name, :surface, :distance, :weather, :track_condition, :class_text, :grade, :headcount, :fetched_at)`),
   delEntries: db.prepare('DELETE FROM entries WHERE race_id = ?'),
   delPayouts: db.prepare('DELETE FROM payouts WHERE race_id = ?'),
   insEntry: db.prepare(`INSERT OR REPLACE INTO entries
@@ -63,16 +64,52 @@ const q = {
      :jockey_id, :jockey_name, :trainer_id, :trainer_name, :odds, :popularity, :horse_weight)`),
   insPayout: db.prepare(`INSERT OR REPLACE INTO payouts (race_id, bet_type, combination, amount, popularity)
     VALUES (:race_id, :bet_type, :combination, :amount, :popularity)`),
+  upsertPerson: db.prepare(`INSERT INTO people (kind, id, name, cname) VALUES (:kind, :id, :name, :cname)
+    ON CONFLICT(kind, id) DO UPDATE SET name = excluded.name, cname = excluded.cname`),
+  setKana: db.prepare('UPDATE people SET kana = ?, fetched_at = ? WHERE kind = ? AND id = ?'),
+  // 出走データに登場する人のうち、読み仮名が未取得の人
+  peopleTodo: db.prepare(`SELECT p.kind, p.id, p.name, p.cname FROM people p
+    WHERE p.kana IS NULL AND p.cname IS NOT NULL AND (
+      (p.kind = 'jockey' AND EXISTS (SELECT 1 FROM entries e WHERE e.jockey_id = p.id)) OR
+      (p.kind = 'trainer' AND EXISTS (SELECT 1 FROM entries e WHERE e.trainer_id = p.id)))
+    ORDER BY p.kind, p.id`),
+  getMeta: db.prepare('SELECT value FROM meta WHERE key = ?'),
+  setMeta: db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
 };
 
-function saveRace({ race, entries, payouts }) {
+function saveRace({ race, entries, payouts, people = [] }) {
   tx(() => {
     q.delEntries.run(race.race_id);
     q.delPayouts.run(race.race_id);
     q.insRace.run({ ...race, fetched_at: now() });
     for (const e of entries) q.insEntry.run({ ...e, race_id: race.race_id });
     for (const p of payouts) q.insPayout.run({ ...p, race_id: race.race_id });
+    for (const p of people) q.upsertPerson.run(p);
   });
+}
+
+/**
+ * 騎手・調教師の読み仮名（ひらがな検索用）を取得。
+ * 名鑑の一覧は週 1 回だけ取り直し、プロフィールは未取得の人だけ取得する。
+ */
+async function syncPeople() {
+  const listedAt = q.getMeta.get('people_list_at')?.value;
+  if (!listedAt || Date.now() - Date.parse(listedAt) > 7 * 864e5) {
+    for (const kind of ['jockey', 'trainer']) {
+      status.message = `${kind === 'jockey' ? '騎手' : '調教師'}名鑑の一覧を取得中`;
+      const list = await fetchPeopleList(kind);
+      tx(() => { for (const p of list) q.upsertPerson.run({ kind, ...p }); });
+    }
+    q.setMeta.run('people_list_at', now());
+  }
+  const todo = q.peopleTodo.all();
+  let done = 0;
+  for (const p of todo) {
+    // 「C.ルメール」のようにカタカナだけの名前は読みが不要
+    if (/^[゠-ヿA-Za-z]*$/.test(normalizeName(p.name))) { q.setKana.run('', now(), p.kind, p.id); continue; }
+    status.message = `騎手・調教師の読み仮名を取得中（${++done}/${todo.length}）`;
+    q.setKana.run(normalizeName(await fetchKana(p.kind, p.cname)), now(), p.kind, p.id);
+  }
 }
 
 /** 月ページを取得して開催と他の月へのリンクを保存 */
@@ -128,6 +165,21 @@ async function syncMeeting(m, today) {
   q.markMeeting.run(complete ? 1 : 0, now(), m.key);
 }
 
+/**
+ * 保存する項目を増やしたときの取り直し。DATA_VERSION を上げると、取得済みの開催を
+ * 未完了に戻して次回の同期で結果ページを 1 回ずつ取り直す（進み具合は meetings.complete が持つ）。
+ *   2: レースの格付け（G1〜G3・リステッド）を追加
+ */
+const DATA_VERSION = 2;
+function migrate() {
+  const v = Number(q.getMeta.get('data_version')?.value || 1);
+  if (v >= DATA_VERSION) return;
+  tx(() => {
+    db.exec('UPDATE meetings SET complete = 0');
+    q.setMeta.run('data_version', String(DATA_VERSION));
+  });
+}
+
 /** from〜to（YYYY-MM-DD）の不足データを取得する。実行中なら現在のジョブを返す。 */
 export function startSync(from, to) {
   if (status.running) return status;
@@ -139,6 +191,7 @@ export function startSync(from, to) {
   });
   (async () => {
     try {
+      migrate();
       if (from <= to) {
         await syncCalendar(from, to, today);
         const meetings = q.pending.all(from, to);
@@ -149,6 +202,9 @@ export function startSync(from, to) {
           await syncMeeting(m, today);
           status.daysDone++;
         }
+        // 読み仮名は検索の補助なので、失敗してもレース結果の取得は成功扱いにする
+        status.phase = 'people';
+        try { await syncPeople(); } catch (e) { console.error('読み仮名の取得に失敗:', e); }
       }
       status.phase = 'done';
       status.message = status.racesFetched ? `${status.racesFetched} レースを新規取得しました` : 'データは最新です';
