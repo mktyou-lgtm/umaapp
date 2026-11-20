@@ -30,7 +30,9 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/status') return json(res, 200, { sync: status, db: dbStats(), today: todayJST() });
     if (url.pathname === '/api/sync' && req.method === 'POST') {
       const { from, to } = range(p);
-      return json(res, 200, { sync: startSync(from, to) });
+      // 確定オッズの取得に使う時間（分）。検索時は 20 分まで、まとめて取るときは指定（最大 600）
+      const oddsBudgetMin = Math.min(600, Math.max(0, Number(p.get('oddsBudget')) || 20));
+      return json(res, 200, { sync: startSync(from, to, { oddsBudgetMin }) });
     }
     if (url.pathname === '/api/candidates') {
       const { from, to } = range(p);

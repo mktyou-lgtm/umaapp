@@ -233,6 +233,9 @@ export async function fetchMeetingResults(sesCname, meeting) {
 
     const { name, surface, distance, class_text, grade } = parseRaceHeader(unit);
     const baba = unit.find('.cell.baba li');
+    // 単勝・複勝オッズ（確定）ページへのリンク
+    // pw151ou + 10 + 場(2) + 年(4) + 回(2) + 日(2) + R(2) + 日付(8) + Z
+    const odds_cname = (unit.html() || '').match(/pw151ou\d{22}Z\/[0-9A-F]{2}/)?.[0] ?? null;
     out.push({
       race: {
         race_id: `${meeting.key}${String(raceNo).padStart(2, '0')}`, // 年+場+回+日+R
@@ -248,6 +251,7 @@ export async function fetchMeetingResults(sesCname, meeting) {
         class_text,
         grade,
         headcount: entries.length,
+        odds_cname,
       },
       entries,
       payouts,
@@ -327,4 +331,19 @@ export async function fetchCards(meeting) {
     });
   });
   return out;
+}
+
+// ---- 確定オッズ（過去レース） ----
+
+/** 単勝・複勝オッズページ → Map(馬番 → 単勝オッズ)。取消などでオッズが無い馬は含めない */
+export async function fetchOdds(oddsCname) {
+  const $ = cheerio.load(await fetchPage({ cname: oddsCname, path: 'accessO.html' }));
+  const odds = new Map();
+  $('table tbody tr').each((_, tr) => {
+    const row = $(tr);
+    const no = intOrNull(row.children('td.num').text());
+    const v = parseFloat(nospace(row.children('td.odds_tan').text()));
+    if (no != null && Number.isFinite(v) && v > 0) odds.set(no, v);
+  });
+  return odds;
 }

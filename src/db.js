@@ -142,6 +142,8 @@ CREATE TABLE IF NOT EXISTS payouts (
 // 列の追加（既存の DB を作り直さずに済むように）
 const hasColumn = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
 if (!hasColumn('races', 'grade')) db.exec('ALTER TABLE races ADD COLUMN grade TEXT'); // 'G1' 'G2' 'G3' 'JG1' 'L' など
+if (!hasColumn('races', 'odds_cname')) db.exec('ALTER TABLE races ADD COLUMN odds_cname TEXT'); // 確定オッズページ
+if (!hasColumn('races', 'odds_at')) db.exec('ALTER TABLE races ADD COLUMN odds_at TEXT'); // 全馬の確定オッズを取得した日時
 
 // 外国人騎手・地方の騎手などコードの無い人は名前で識別する（'n:D.レーン'）。古いデータの空欄を埋める。
 db.exec(`

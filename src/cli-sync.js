@@ -6,7 +6,8 @@ import { startSync, status, dbStats, todayJST } from './sync.js';
 const from = process.argv[2] || process.env.SYNC_FROM || `${todayJST().slice(0, 4)}-01-01`;
 const to = process.argv[3] || todayJST();
 console.log(`同期: ${from} 〜 ${to}`);
-startSync(from, to);
+// 確定オッズの取得に使う時間（分）。GitHub Actions の定期実行では短め、まとめて取るときは長めに指定
+startSync(from, to, { oddsBudgetMin: Number(process.env.ODDS_BUDGET_MIN || 100) });
 const timer = setInterval(() => {
   console.log(`[${status.phase}] ${status.daysDone}/${status.daysTotal}開催 新規${status.racesFetched}R ${status.waiting || status.message}`);
   if (!status.running) {

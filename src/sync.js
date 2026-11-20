@@ -1,6 +1,6 @@
 // 期間指定の差分同期。DB に無い開催だけを JRA 公式サイトから取得する。
 import { db, tx } from './db.js';
-import { fetchMonth, fetchMeeting, fetchMeetingResults, fetchPeopleList, fetchKana, fetchCardMeetings, fetchCards, hooks } from './jra.js';
+import { fetchMonth, fetchMeeting, fetchMeetingResults, fetchPeopleList, fetchKana, fetchCardMeetings, fetchCards, fetchOdds, hooks } from './jra.js';
 import { normalizeName } from '../public/sim.js';
 
 export const status = {
@@ -53,8 +53,8 @@ const q = {
   setSes: db.prepare('UPDATE meetings SET ses_cname = ?, races_expected = ? WHERE key = ?'),
   markMeeting: db.prepare('UPDATE meetings SET complete = ?, fetched_at = ? WHERE key = ?'),
   insRace: db.prepare(`INSERT OR REPLACE INTO races
-    (race_id, date, venue_code, venue, race_no, name, surface, distance, weather, track_condition, class_text, grade, headcount, fetched_at)
-    VALUES (:race_id, :date, :venue_code, :venue, :race_no, :name, :surface, :distance, :weather, :track_condition, :class_text, :grade, :headcount, :fetched_at)`),
+    (race_id, date, venue_code, venue, race_no, name, surface, distance, weather, track_condition, class_text, grade, headcount, odds_cname, fetched_at)
+    VALUES (:race_id, :date, :venue_code, :venue, :race_no, :name, :surface, :distance, :weather, :track_condition, :class_text, :grade, :headcount, :odds_cname, :fetched_at)`),
   delEntries: db.prepare('DELETE FROM entries WHERE race_id = ?'),
   delPayouts: db.prepare('DELETE FROM payouts WHERE race_id = ?'),
   insEntry: db.prepare(`INSERT OR REPLACE INTO entries
@@ -202,12 +202,42 @@ export async function syncCards({ force = false } = {}) {
   q.setMeta.run('cards_at', now());
 }
 
+// ---- 確定オッズ（全馬） ----
+const qo = {
+  todo: db.prepare('SELECT race_id, odds_cname, date FROM races WHERE odds_cname IS NOT NULL AND odds_at IS NULL ORDER BY date DESC, race_id'),
+  setOdds: db.prepare('UPDATE entries SET odds = ? WHERE race_id = ? AND horse_no = ?'),
+  done: db.prepare('UPDATE races SET odds_at = ? WHERE race_id = ?'),
+  count: db.prepare('SELECT COUNT(*) n, SUM(odds_at IS NOT NULL) done FROM races'),
+};
+
+/**
+ * 結果確定済みレースの全馬の単勝オッズ（確定）を取得。勝率モデルの学習・検証用。
+ * 1 レース 1 ページなので、budgetMs の時間内で新しいレースから順に進め、残りは次回に回す。
+ */
+async function syncOdds(budgetMs) {
+  const until = Date.now() + budgetMs;
+  const todo = qo.todo.all();
+  let n = 0;
+  for (const r of todo) {
+    if (Date.now() > until) break;
+    status.message = `確定オッズを取得中（${++n}/${todo.length}・${r.date}）`;
+    const odds = await fetchOdds(r.odds_cname);
+    tx(() => {
+      for (const [no, v] of odds) qo.setOdds.run(v, r.race_id, no);
+      qo.done.run(now(), r.race_id);
+    });
+  }
+}
+export const oddsProgress = () => qo.count.get();
+
 /**
  * 保存する項目を増やしたときの取り直し。DATA_VERSION を上げると、取得済みの開催を
  * 未完了に戻して次回の同期で結果ページを 1 回ずつ取り直す（進み具合は meetings.complete が持つ）。
  *   2: レースの格付け（G1〜G3・リステッド）を追加
+ *   3: 確定オッズページへのリンクを追加
+ *   4: 3 のリンクの読み取り誤りを修正して取り直し
  */
-const DATA_VERSION = 2;
+const DATA_VERSION = 4;
 function migrate() {
   const v = Number(q.getMeta.get('data_version')?.value || 1);
   if (v >= DATA_VERSION) return;
@@ -242,6 +272,8 @@ export function startSync(from, to, opts = {}) {
         // 読み仮名・出馬表は補助なので、失敗してもレース結果の取得は成功扱いにする
         status.phase = 'people';
         try { await syncPeople(); } catch (e) { console.error('読み仮名の取得に失敗:', e); }
+        status.phase = 'odds';
+        try { await syncOdds((opts.oddsBudgetMin ?? 20) * 60e3); } catch (e) { console.error('確定オッズの取得に失敗:', e); }
       }
       status.phase = 'cards';
       try { await syncCards({ force: opts.forceCards }); } catch (e) { console.error('出馬表の取得に失敗:', e); status.cardsError = String(e?.message || e); }

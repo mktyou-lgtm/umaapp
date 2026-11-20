@@ -2,6 +2,7 @@
 // 静的サイトの書き出し（scripts/export.js）と、PC 版の出馬表画面（/api/dataset）で共通。
 import { db } from './db.js';
 import { classOf } from '../public/sim.js';
+import { trainModel } from '../public/model.js';
 
 export function buildDataset() {
   const races = db.prepare(`SELECT race_id, date, venue, race_no, name, surface, distance, headcount, track_condition, class_text, grade
@@ -18,12 +19,12 @@ export function buildDataset() {
   };
 
   const entries = db.prepare(`SELECT race_id, horse_no, frame_no, finish, horse_id, horse_name, jockey_id, jockey_name,
-      trainer_id, trainer_name, popularity, odds FROM entries`).all()
+      trainer_id, trainer_name, popularity, odds, weight_carried FROM entries`).all()
     .filter((e) => raceIndex.has(e.race_id))
     .map((e) => [
       raceIndex.get(e.race_id), e.horse_no, e.finish,
       idOf(names.h, e.horse_id, e.horse_name), idOf(names.j, e.jockey_id, e.jockey_name),
-      idOf(names.t, e.trainer_id, e.trainer_name), e.popularity, e.odds, e.frame_no,
+      idOf(names.t, e.trainer_id, e.trainer_name), e.popularity, e.odds, e.frame_no, e.weight_carried,
     ]);
 
   // 単勝（0）と複勝（1）の払戻だけを書き出す
@@ -52,7 +53,7 @@ export function buildDataset() {
     if ((p.kind === 'jockey' ? names.j : names.t)[p.id] !== undefined) dict[p.id] = p.kana;
   }
 
-  return {
+  const data = {
     generatedAt: new Date().toISOString(),
     firstDate: races[0]?.date ?? null,
     lastDate: races.at(-1)?.date ?? null,
@@ -69,6 +70,9 @@ export function buildDataset() {
       entries: cardEntries,
     },
   };
+  // 勝率予測モデル（学習と検証結果）
+  data.model = trainModel(data);
+  return data;
 }
 
 // PC 版用のキャッシュ（DB が更新されたら作り直す）

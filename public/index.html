@@ -135,16 +135,27 @@ tr.refund td { color: var(--muted); }
 .fin { display: inline-block; min-width: 22px; padding: 1px 4px; border-radius: 4px; text-align: center; font-size: 12px; background: var(--chip); color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .fin.f1 { background: var(--accent); color: #fff; font-weight: 700; }
 .fin.f2, .fin.f3 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); font-weight: 600; }
+.model-panel summary { cursor: pointer; margin: 0; }
+.model-panel h4 { font-size: 14px; margin: 16px 0 6px; }
+.model-panel table { margin-top: 4px; }
+.model-panel .good { color: var(--up-text); font-weight: 700; }
+.c-pred b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.c-pred b.pbest { color: var(--accent); }
+.ev-good { color: var(--up-text); font-weight: 700; }
+.value-tag { display: inline-block; padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, var(--up-text) 15%, transparent); color: var(--up-text); font-size: 11px; font-weight: 700; }
+.ctable td.c-pred { white-space: nowrap; }
 .status-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; background: var(--chip); color: var(--down-text); font-size: 12px; font-weight: 600; }
 /* スマホでは 1 頭ずつのカード表示に */
-@media (max-width: 700px) {
+@media (max-width: 900px) {
   .ctable thead { display: none; }
   .ctable tr { display: grid; grid-template-columns: 34px 1fr auto; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid var(--grid); }
   .ctable td { padding: 0; border: none; }
-  .ctable td.c-no { grid-row: span 4; }
+  .ctable td.c-no { grid-row: span 5; }
   .ctable td.c-odds { text-align: right; }
+  .ctable td.c-pred { grid-column: 2 / span 2; }
+  .ctable td.c-pred b, .ctable td.c-pred .sub2 { display: inline; margin-right: 8px; }
   .ctable td.c-j, .ctable td.c-t, .ctable td.c-h { grid-column: 2 / span 2; }
-  .ctable td[data-label]::before { content: attr(data-label); display: inline-block; min-width: 3.2em; color: var(--muted); font-size: 11px; }
+  .ctable td[data-label]::before { content: attr(data-label); display: inline-block; min-width: 3.2em; margin-right: 6px; color: var(--muted); font-size: 11px; }
   .ctable td.c-j .pname, .ctable td.c-t .pname { display: inline; }
   .ctable td.c-j .pstat, .ctable td.c-t .pstat { display: inline; margin-left: 6px; }
 }
@@ -171,6 +182,8 @@ tr.refund td { color: var(--muted); }
           <select id="cardSort">
             <option value="seq">馬番</option>
             <option value="odds">単勝オッズ</option>
+            <option value="pred">予想勝率</option>
+            <option value="ev">期待値</option>
             <option value="jWin">騎手の勝率</option>
             <option value="jRec">騎手の単勝回収率</option>
             <option value="tWin">調教師の勝率</option>
@@ -183,9 +196,15 @@ tr.refund td { color: var(--muted); }
     </div>
     <div class="card" id="cardBody" hidden>
       <p class="title" id="cardTitle"></p>
+      <p class="note" id="cardModelNote" style="margin:0 0 8px"></p>
       <div id="cardTable"></div>
+      <p class="note">予想勝率は過去のデータからの推定で、的中を保証するものではありません。下の「予想モデルの検証結果」で、過去のレースでの当たり具合を確認できます。</p>
       <p class="note">騎手・調教師・馬の成績は、レース前日までの過去 1 年（取得済みデータの範囲）で、選んだ範囲の条件に一致するレースを集計。単回 = 単勝を 100 円ずつ買った場合の回収率。（）内は件数で、10 件未満は薄く表示。各項目で上位 3 頭の値を太字にしています。名前をタップすると、その条件で収支シミュレーターを開きます。</p>
     </div>
+    <details class="card model-panel" id="modelPanel">
+      <summary class="title">予想モデルの検証結果</summary>
+      <div id="modelReport"></div>
+    </details>
   </section>
 
   <section id="viewSim">
@@ -269,6 +288,7 @@ import {
   createStaticEngine, normalizeName, toHiragana, toKatakana,
   VENUE_LIST, DIST_BANDS, POP_BANDS, CONDITIONS, CLASS_LIST, CLASS_EXTRA, SURFACES, CARD_SCOPES,
 } from './sim.js';
+import { createPredictor, FEATURES, MARKET } from './model.js';
 const $ = (s) => document.querySelector(s);
 const f = $('#f');
 
@@ -311,6 +331,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 let state = { selectedId: null, data: null, lastParams: null, polling: false };
 // 静的版（GitHub Pages）のときは data.json を読み込んでブラウザ内で計算する。null ならローカルサーバー版。
 let engine = null;
+let staticData = null;
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -445,7 +466,8 @@ async function init() {
   try {
     const r = await fetch('data/data.json', { cache: 'no-cache' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    engine = createStaticEngine(await r.json());
+    staticData = await r.json();
+    engine = createStaticEngine(staticData);
   } catch (e) {
     $('#dbinfo').innerHTML = `<span class="error">データを読み込めませんでした（${esc(e.message)}）</span>`;
     return;
@@ -765,10 +787,18 @@ document.querySelectorAll('[data-viewtab]').forEach((b) => b.addEventListener('c
 async function cardEngine(reload = false) {
   if (engine) return engine;
   if (cv.engine && !reload) return cv.engine;
-  cv.loading ??= fetch('api/dataset', { cache: 'no-store' }).then((r) => r.json()).then((d) => createStaticEngine(d)).finally(() => { cv.loading = null; });
+  cv.loading ??= fetch('api/dataset', { cache: 'no-store' }).then((r) => r.json())
+    .then((d) => { cv.data = d; cv.predict = null; return createStaticEngine(d); }).finally(() => { cv.loading = null; });
   cv.engine = await cv.loading;
   return cv.engine;
 }
+// 勝率予測（初回だけ全データから騎手・馬などの成績を積み上げる）
+function predictor() {
+  const data = engine ? staticData : cv.data;
+  if (!cv.predict || cv.predictData !== data) { cv.predict = createPredictor(data, data?.model); cv.predictData = data; }
+  return cv.predict;
+}
+const modelOf = () => (engine ? staticData : cv.data)?.model;
 
 async function openCards(reload = false) {
   $('#cardInfo').textContent = '出馬表を読み込み中…';
@@ -830,7 +860,11 @@ function renderCard(e) {
   const cls = CLASS_LIST.find((x) => x.key === r.cls)?.label ?? '';
   $('#cardTitle').innerHTML = `${esc(r.venue)}${r.race_no}R ${esc(r.race_name)}${grade}<small>${fmtDay(r.date)}${r.post_time ? ' ' + r.post_time + ' 発走' : ''}／${SURFACES[r.surface] || ''} ${r.distance}m／${esc(cls)}／${r.headcount}頭</small>`;
 
-  const runners = c.runners.map((x, i) => ({ ...x, seq: i + 1 }));
+  const preds = predictor()(r, c.runners);
+  const runners = c.runners.map((x, i) => ({ ...x, seq: i + 1, pred: preds[i] }));
+  const usedComb = preds.some((p) => p?.combined);
+  const pw = (x) => x.pred?.p ?? null;
+  const ev = (x) => x.pred?.ev ?? null;
   const jw = (x) => x.jockey.runs ? x.jockey.winRate : null; jw.n = (x) => x.jockey.runs;
   const jp = (x) => x.jockey.runs ? x.jockey.placeRate : null; jp.n = jw.n;
   const jr = (x) => x.jockey.runs ? x.jockey.winRecovery : null; jr.n = jw.n;
@@ -840,6 +874,7 @@ function renderCard(e) {
   const best = {
     jWin: topKeys(runners, jw), jPlace: topKeys(runners, jp), jRec: topKeys(runners, jr),
     tWin: topKeys(runners, tw), tPlace: topKeys(runners, tp), tRec: topKeys(runners, tr),
+    p: topKeys(runners, pw),
   };
 
   const sorters = {
@@ -849,6 +884,8 @@ function renderCard(e) {
     jRec: (a, b) => (jr(b) ?? -1) - (jr(a) ?? -1),
     tWin: (a, b) => (tw(b) ?? -1) - (tw(a) ?? -1),
     hPlace: (a, b) => (b.horse.runs ? b.horse.placeRate : -1) - (a.horse.runs ? a.horse.placeRate : -1),
+    pred: (a, b) => (pw(b) ?? -1) - (pw(a) ?? -1),
+    ev: (a, b) => (ev(b) ?? -1) - (ev(a) ?? -1),
   };
   runners.sort(sorters[$('#cardSort').value] || sorters.seq);
 
@@ -859,18 +896,85 @@ function renderCard(e) {
     : '<div class="sub2">出走データなし（新馬など）</div>';
   const rec = (s) => `${s.first}-${s.second}-${s.third}-${s.runs - s.first - s.second - s.third}`;
 
-  $('#cardTable').innerHTML = `<table class="ctable"><thead><tr><th>馬番</th><th>馬名</th><th>単勝</th><th>騎手（${esc(scopeLabel)}）</th><th>調教師（${esc(scopeLabel)}）</th><th>馬の成績・近走（新しい順）</th></tr></thead><tbody>${
+  // 予想勝率の欄：予想勝率・オッズから見た勝率・期待値（予想勝率 × オッズ）
+  const predHtml = (x) => {
+    if (!x.pred) return '<span class="sub2">-</span>';
+    const { p, pMkt } = x.pred;
+    const e = x.pred.ev;
+    const evTag = e == null ? '' : `<div class="sub2">期待値 <span class="${e >= 1 ? 'ev-good' : ''}">${e.toFixed(2)}</span>${e >= 1.2 ? ' <span class="value-tag">妙味</span>' : ''}</div>`;
+    return `<b class="${best.p.has(x.seq) ? 'pbest' : ''}">${pct(p)}</b>${pMkt != null ? `<div class="sub2">オッズ上 ${pct(pMkt)}</div>` : ''}${evTag}`;
+  };
+  const predHead = usedComb ? '予想勝率' : '予想勝率<span class="sub2">（能力のみ）</span>';
+  $('#cardModelNote').innerHTML = preds.some(Boolean)
+    ? (usedComb
+      ? '予想勝率は、オッズと騎手・調教師・馬の過去成績を組み合わせたモデル（総合モデル）による推定です。期待値 = 予想勝率 × 単勝オッズ（1.0 以上で「オッズの割に勝つ見込みが高い」、1.2 以上に「妙味」）。'
+      : !modelOf()?.combined
+        ? '過去レースの確定オッズを取得中で、オッズを使う総合モデルはまだありません。今は騎手・調教師・馬の過去成績だけの能力モデルで推定しています。期待値 = 予想勝率 × 単勝オッズ。'
+        : 'オッズがまだ出ていない（または一部の馬に無い）ため、騎手・調教師・馬の過去成績だけの能力モデルで推定しています。オッズが出ると総合モデルに切り替わります。')
+    : '勝率モデルがまだありません（データが足りません）。';
+  $('#cardTable').innerHTML = `<table class="ctable"><thead><tr><th>馬番</th><th>馬名</th><th>単勝</th><th>${predHead}</th><th>騎手（${esc(scopeLabel)}）</th><th>調教師（${esc(scopeLabel)}）</th><th>馬の成績・近走（新しい順）</th></tr></thead><tbody>${
     runners.map((x) => `<tr class="${x.status ? 'scratched' : ''}">
       <td class="c-no"><span class="waku w${x.frame_no || 0}">${x.horse_no ?? '-'}</span></td>
       <td class="c-horse"><div class="hname">${link('horse', x.horse_id, x.horse_name)}${x.status ? `<span class="status-tag">${esc(x.status)}</span>` : ''}</div>
         <div class="sub2">${esc(x.sex_age || '')} ${x.weight_carried ? x.weight_carried.toFixed(1) + 'kg' : ''}${x.horse_no == null ? '・枠順未定' : ''}</div></td>
       <td class="c-odds odds">${x.odds ? `<b>${x.odds.toFixed(1)}</b><div class="sub2">${x.pop ? x.pop + '番人気' : ''}</div>` : '<span class="sub2">-</span>'}</td>
+      <td class="c-pred" data-label="予想勝率">${predHtml(x)}</td>
       <td class="c-j" data-label="騎手"><div class="pname">${link('jockey', x.jockey_id, x.jockey_name)}</div>${statLine(x.jockey, { win: best.jWin.has(x.seq), place: best.jPlace.has(x.seq), rec: best.jRec.has(x.seq) })}</td>
       <td class="c-t" data-label="調教師"><div class="pname">${link('trainer', x.trainer_id, x.trainer_name)}</div>${statLine(x.trainer, { win: best.tWin.has(x.seq), place: best.tPlace.has(x.seq), rec: best.tRec.has(x.seq) })}</td>
       <td class="c-h" data-label="馬"><div class="pstat">全 ${x.horse.runs ? rec(x.horse) : '-'}・同条件 ${x.horseCond.runs ? rec(x.horseCond) : '-'}</div>${formHtml(x.form)}</td>
     </tr>`).join('')}</tbody></table>`;
   cv.last = c;
 }
+
+// ---- 予想モデルの検証結果 ----
+function renderModelReport() {
+  const m = modelOf();
+  const box = $('#modelReport');
+  if (!m) { box.innerHTML = '<p class="note">まだモデルがありません（データが足りません）。</p>'; return; }
+  const rep = m.report;
+  const fmtN = (v) => v.toLocaleString();
+  let html = `<p class="note">学習日時: ${fmtTime(m.trainedAt)}／学習に使ったレース: 能力モデル ${fmtN(m.races.all)}・総合モデル ${fmtN(m.races.withOdds)}（全馬の確定オッズがあるレース）</p>`;
+  if (!rep) {
+    html += '<p class="note">過去レースの確定オッズを取得中のため、総合モデルの学習と検証はまだできていません。取得が進むと、ここに検証結果が表示されます。</p>';
+  } else {
+    const ll = rep.logloss, th = rep.topHit;
+    const better = (v) => (v < ll.market ? 'good' : '');
+    html += `<p class="note">学習 ${rep.trainFrom}〜${rep.trainTo}（${fmtN(rep.trainRaces)} レース）で作ったモデルを、学習に使っていない ${rep.from}〜${rep.to} の ${fmtN(rep.races)} レースで検証。</p>
+    <h4>勝ち馬の予測の当たり具合</h4>
+    <div class="hscroll"><table><tr><th class="l">方法</th><th>対数損失（小さいほど良い）</th><th>本命が勝った割合</th></tr>
+      <tr><td class="l">ランダム（全馬同じ確率）</td><td>${ll.uniform.toFixed(3)}</td><td>-</td></tr>
+      <tr><td class="l">オッズだけ（1番人気が本命）</td><td>${ll.market.toFixed(3)}</td><td>${pct(th.market)}</td></tr>
+      <tr><td class="l">能力モデル（オッズを使わない）</td><td class="${better(ll.fundamental)}">${ll.fundamental.toFixed(3)}</td><td>${pct(th.fundamental)}</td></tr>
+      <tr><td class="l">総合モデル（オッズ＋能力）</td><td class="${better(ll.combined)}">${ll.combined.toFixed(3)}</td><td>${pct(th.combined)}</td></tr>
+    </table></div>
+    <p class="note">対数損失は、勝った馬にどれだけ高い確率を付けていたかの指標です。「オッズだけ」より小さければ、市場より正確に勝ち馬を見積もれていることになります。</p>
+    <h4>予想勝率と実際の勝率（総合モデル）</h4>
+    <div class="hscroll"><table><tr><th class="l">予想勝率</th><th>頭数</th><th>予想の平均</th><th>実際に勝った割合</th></tr>
+      ${rep.calibration.filter((c) => c.n).map((c) => `<tr><td class="l">${Math.round(c.lo * 100)}〜${Math.round(c.hi * 100)}%</td><td>${fmtN(c.n)}</td><td>${pct(c.pred)}</td><td>${pct(c.actual)}</td></tr>`).join('')}
+    </table></div>
+    <p class="note">予想の平均と実際の割合が近いほど、表示している勝率をそのまま信じてよいことになります。</p>
+    <h4>期待値で買った場合の回収率（検証期間・単勝 100 円ずつ）</h4>
+    <div class="hscroll"><table><tr><th class="l">買い方</th><th>購入数</th><th>的中</th><th>回収率</th></tr>
+      ${rep.roi.map((x) => `<tr><td class="l">総合モデルの期待値 ${x.th.toFixed(1)} 以上</td><td>${fmtN(x.bets)}</td><td>${fmtN(x.hits)}</td><td class="${x.recovery >= 1 ? 'good' : ''}">${pct(x.recovery)}</td></tr>`).join('')}
+      ${rep.roiFundamental.map((x) => `<tr><td class="l">能力モデルの期待値 ${x.th.toFixed(1)} 以上</td><td>${fmtN(x.bets)}</td><td>${fmtN(x.hits)}</td><td class="${x.recovery >= 1 ? 'good' : ''}">${pct(x.recovery)}</td></tr>`).join('')}
+      <tr><td class="l">（比較）全馬を買う</td><td>${fmtN(rep.baseline.all.bets)}</td><td>-</td><td>${pct(rep.baseline.all.recovery)}</td></tr>
+      <tr><td class="l">（比較）1番人気を買う</td><td>${fmtN(rep.baseline.favorite.bets)}</td><td>-</td><td>${pct(rep.baseline.favorite.recovery)}</td></tr>
+      <tr><td class="l">（比較）総合モデルの本命を買う</td><td>${fmtN(rep.baseline.combinedTop.bets)}</td><td>-</td><td>${pct(rep.baseline.combinedTop.recovery)}</td></tr>
+    </table></div>
+    <p class="note">注意: 判定に使ったのは締切後の確定オッズです。実際に買う時点のオッズとはずれるため、実戦ではこの回収率より下がることがあります。購入数が少ない行は偶然の影響が大きいので参考程度にしてください。</p>`;
+  }
+  // 能力モデルで効いている要素（標準化した重みの大きい順）
+  const f = m.fundamental;
+  if (f) {
+    const items = f.keys.map((k, i) => ({ label: FEATURES.find((x) => x.key === k)?.label ?? k, w: f.w[i] }))
+      .sort((a, b) => Math.abs(b.w) - Math.abs(a.w));
+    html += `<h4>能力モデルで効いている要素</h4><div class="hscroll"><table><tr><th class="l">要素</th><th>重み</th></tr>${
+      items.map((x) => `<tr><td class="l">${esc(x.label)}</td><td>${x.w >= 0 ? '+' : ''}${x.w.toFixed(3)}</td></tr>`).join('')}</table></div>
+      <p class="note">重みが＋なら値が大きいほど勝率が上がる要素、－なら下がる要素です（着順の比率は小さいほど好成績なので－になります）。</p>`;
+  }
+  box.innerHTML = html;
+}
+$('#modelPanel').addEventListener('toggle', () => { if ($('#modelPanel').open) renderModelReport(); });
 
 // 名前をタップ → その条件（出馬表の範囲・期間）で収支シミュレーターを開く
 $('#cardTable').addEventListener('click', (ev) => {

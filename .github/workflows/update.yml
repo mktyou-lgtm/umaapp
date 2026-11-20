@@ -12,6 +12,10 @@ on:
         description: '取得開始日（YYYY-MM-DD）'
         required: false
         default: '2026-01-01'
+      odds_budget:
+        description: '過去レースの確定オッズ取得に使う時間（分）。初回のまとめ取りは 280 程度'
+        required: false
+        default: '90'
 
 permissions:
   contents: read
@@ -25,7 +29,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -44,11 +48,15 @@ jobs:
           key: jra-db-${{ github.run_id }}
           restore-keys: jra-db-
 
+      # 確定オッズは ODDS_BUDGET_MIN 分で打ち切って次回に回す。万一長引いても
+      # データベースの保存まで進めるよう、この手順だけ時間制限を付けて失敗扱いでも続行する
       - name: JRA 公式サイトから差分取得
         id: sync
         continue-on-error: true
+        timeout-minutes: 320
         env:
           SYNC_FROM: ${{ inputs.from || '2026-01-01' }}
+          ODDS_BUDGET_MIN: ${{ inputs.odds_budget || '90' }}
         run: npm run sync
 
       - name: データベースを保存
