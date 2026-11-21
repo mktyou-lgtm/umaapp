@@ -288,7 +288,7 @@ import {
   createStaticEngine, normalizeName, toHiragana, toKatakana,
   VENUE_LIST, DIST_BANDS, POP_BANDS, CONDITIONS, CLASS_LIST, CLASS_EXTRA, SURFACES, CARD_SCOPES,
 } from './sim.js';
-import { createPredictor, FEATURES, MARKET } from './model.js';
+import { createPredictor, FEATURES, MARKET, MARKET2 } from './model.js';
 const $ = (s) => document.querySelector(s);
 const f = $('#f');
 
@@ -874,7 +874,7 @@ function renderCard(e) {
   const best = {
     jWin: topKeys(runners, jw), jPlace: topKeys(runners, jp), jRec: topKeys(runners, jr),
     tWin: topKeys(runners, tw), tPlace: topKeys(runners, tp), tRec: topKeys(runners, tr),
-    p: topKeys(runners, pw),
+    p: topKeys(runners, pw), pf: topKeys(runners, (x) => x.pred?.pFund ?? null),
   };
 
   const sorters = {
@@ -899,15 +899,16 @@ function renderCard(e) {
   // 予想勝率の欄：予想勝率・オッズから見た勝率・期待値（予想勝率 × オッズ）
   const predHtml = (x) => {
     if (!x.pred) return '<span class="sub2">-</span>';
-    const { p, pMkt } = x.pred;
+    const { p, pMkt, pFund, combined } = x.pred;
     const e = x.pred.ev;
     const evTag = e == null ? '' : `<div class="sub2">期待値 <span class="${e >= 1 ? 'ev-good' : ''}">${e.toFixed(2)}</span>${e >= 1.2 ? ' <span class="value-tag">妙味</span>' : ''}</div>`;
-    return `<b class="${best.p.has(x.seq) ? 'pbest' : ''}">${pct(p)}</b>${pMkt != null ? `<div class="sub2">オッズ上 ${pct(pMkt)}</div>` : ''}${evTag}`;
+    return `<b class="${best.p.has(x.seq) ? 'pbest' : ''}">${pct(p)}</b>${pMkt != null ? `<div class="sub2">オッズ上 ${pct(pMkt)}</div>` : ''}${
+      combined ? `<div class="sub2">能力のみ <span class="${best.pf.has(x.seq) ? 'pbest' : ''}">${pct(pFund)}</span></div>` : ''}${evTag}`;
   };
   const predHead = usedComb ? '予想勝率' : '予想勝率<span class="sub2">（能力のみ）</span>';
   $('#cardModelNote').innerHTML = preds.some(Boolean)
     ? (usedComb
-      ? '予想勝率は、オッズと騎手・調教師・馬の過去成績を組み合わせたモデル（総合モデル）による推定です。期待値 = 予想勝率 × 単勝オッズ（1.0 以上で「オッズの割に勝つ見込みが高い」、1.2 以上に「妙味」）。'
+      ? '予想勝率は、オッズと騎手・調教師・馬の過去成績（走破タイム・上りなどを含む）を組み合わせたモデル（総合モデル）による推定です。「能力のみ」はオッズを使わない能力モデルの勝率で、オッズより高ければ過去成績の割に人気が無い馬です。期待値 = 予想勝率 × 単勝オッズ（1.0 以上で「オッズの割に勝つ見込みが高い」、1.2 以上に「妙味」）。検証では、過去成績はほぼオッズに織り込まれていて、期待値で買っても回収率 100% は超えていません（下の「予想モデルの検証結果」）。'
       : !modelOf()?.combined
         ? '過去レースの確定オッズを取得中で、オッズを使う総合モデルはまだありません。今は騎手・調教師・馬の過去成績だけの能力モデルで推定しています。期待値 = 予想勝率 × 単勝オッズ。'
         : 'オッズがまだ出ていない（または一部の馬に無い）ため、騎手・調教師・馬の過去成績だけの能力モデルで推定しています。オッズが出ると総合モデルに切り替わります。')
@@ -939,7 +940,10 @@ function renderModelReport() {
   } else {
     const ll = rep.logloss, th = rep.topHit;
     const better = (v) => (v < ll.market ? 'good' : '');
-    html += `<p class="note">学習 ${rep.trainFrom}〜${rep.trainTo}（${fmtN(rep.trainRaces)} レース）で作ったモデルを、学習に使っていない ${rep.from}〜${rep.to} の ${fmtN(rep.races)} レースで検証。</p>
+    html += rep.folds
+      ? `<p class="note">${rep.from}〜${rep.to} の ${fmtN(rep.races)} レースで検証。「その時点までのデータで学習 → 次の ${rep.stepDays} 日間を予想」を ${rep.folds} 回くり返したもので、どのレースも学習に使っていないモデルで予想しています。</p>`
+      : `<p class="note">学習 ${rep.trainFrom}〜${rep.trainTo}（${fmtN(rep.trainRaces)} レース）で作ったモデルを、学習に使っていない ${rep.from}〜${rep.to} の ${fmtN(rep.races)} レースで検証。</p>`;
+    html += `
     <h4>勝ち馬の予測の当たり具合</h4>
     <div class="hscroll"><table><tr><th class="l">方法</th><th>対数損失（小さいほど良い）</th><th>本命が勝った割合</th></tr>
       <tr><td class="l">ランダム（全馬同じ確率）</td><td>${ll.uniform.toFixed(3)}</td><td>-</td></tr>
@@ -970,7 +974,15 @@ function renderModelReport() {
       .sort((a, b) => Math.abs(b.w) - Math.abs(a.w));
     html += `<h4>能力モデルで効いている要素</h4><div class="hscroll"><table><tr><th class="l">要素</th><th>重み</th></tr>${
       items.map((x) => `<tr><td class="l">${esc(x.label)}</td><td>${x.w >= 0 ? '+' : ''}${x.w.toFixed(3)}</td></tr>`).join('')}</table></div>
-      <p class="note">重みが＋なら値が大きいほど勝率が上がる要素、－なら下がる要素です（着順の比率は小さいほど好成績なので－になります）。</p>`;
+      <p class="note">重みが＋なら値が大きいほど勝率が上がる要素、－なら下がる要素です（着順・人気・タイム差の比率は小さいほど好成績なので－になります）。</p>`;
+  }
+  // 総合モデルが能力とオッズをどう組み合わせているか
+  const c = m.combined;
+  if (c && c.keys.includes('f_logp')) {
+    const label = { f_logp: '能力モデルの勝率', m_logp: MARKET.label, m_logp2: MARKET2.label };
+    html += `<h4>総合モデルの組み合わせ方</h4><div class="hscroll"><table><tr><th class="l">要素</th><th>重み</th></tr>${
+      c.keys.map((k, i) => `<tr><td class="l">${esc(label[k] ?? k)}</td><td>${c.w[i] >= 0 ? '+' : ''}${c.w[i].toFixed(3)}</td></tr>`).join('')}</table></div>
+      <p class="note">能力モデルの重みが 0 に近いほど、過去成績がオッズに無い情報をほとんど持っていない（オッズにすでに織り込まれている）ことを表します。</p>`;
   }
   box.innerHTML = html;
 }

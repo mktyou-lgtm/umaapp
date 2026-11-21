@@ -59,9 +59,13 @@ const q = {
   delPayouts: db.prepare('DELETE FROM payouts WHERE race_id = ?'),
   insEntry: db.prepare(`INSERT OR REPLACE INTO entries
     (race_id, horse_no, frame_no, finish, finish_num, horse_id, horse_name, sex_age, weight_carried,
-     jockey_id, jockey_name, trainer_id, trainer_name, odds, popularity, horse_weight)
+     jockey_id, jockey_name, trainer_id, trainer_name, odds, popularity, horse_weight, time_sec, margin, corner, last3f, rating)
     VALUES (:race_id, :horse_no, :frame_no, :finish, :finish_num, :horse_id, :horse_name, :sex_age, :weight_carried,
-     :jockey_id, :jockey_name, :trainer_id, :trainer_name, :odds, :popularity, :horse_weight)`),
+     :jockey_id, :jockey_name, :trainer_id, :trainer_name, :odds, :popularity, :horse_weight, :time_sec, :margin, :corner, :last3f, :rating)`),
+  // 取り直しのときに、取得済みの確定オッズを引き継ぐ
+  oldOdds: db.prepare('SELECT horse_no, odds FROM entries WHERE race_id = ? AND odds IS NOT NULL'),
+  oldOddsAt: db.prepare('SELECT odds_at, odds_cname FROM races WHERE race_id = ?'),
+  keepOddsAt: db.prepare('UPDATE races SET odds_at = ? WHERE race_id = ? AND odds_cname IS ?'),
   insPayout: db.prepare(`INSERT OR REPLACE INTO payouts (race_id, bet_type, combination, amount, popularity)
     VALUES (:race_id, :bet_type, :combination, :amount, :popularity)`),
   upsertPerson: db.prepare(`INSERT INTO people (kind, id, name, cname) VALUES (:kind, :id, :name, :cname)
@@ -79,12 +83,16 @@ const q = {
 
 function saveRace({ race, entries, payouts, people = [] }) {
   tx(() => {
+    const prev = q.oldOddsAt.get(race.race_id);
+    const oldOdds = new Map(q.oldOdds.all(race.race_id).map((r) => [r.horse_no, r.odds]));
+    for (const e of entries) e.odds ??= oldOdds.get(e.horse_no) ?? null;
     q.delEntries.run(race.race_id);
     q.delPayouts.run(race.race_id);
     q.insRace.run({ ...race, fetched_at: now() });
     for (const e of entries) q.insEntry.run({ ...e, race_id: race.race_id });
     for (const p of payouts) q.insPayout.run({ ...p, race_id: race.race_id });
     for (const p of people) q.upsertPerson.run(p);
+    if (prev?.odds_at) q.keepOddsAt.run(prev.odds_at, race.race_id, prev.odds_cname);
   });
 }
 
@@ -236,8 +244,9 @@ export const oddsProgress = () => qo.count.get();
  *   2: レースの格付け（G1〜G3・リステッド）を追加
  *   3: 確定オッズページへのリンクを追加
  *   4: 3 のリンクの読み取り誤りを修正して取り直し
+ *   5: 走破タイム・着差・コーナー通過順位・推定上り・レーティングを追加
  */
-const DATA_VERSION = 4;
+const DATA_VERSION = 5;
 function migrate() {
   const v = Number(q.getMeta.get('data_version')?.value || 1);
   if (v >= DATA_VERSION) return;

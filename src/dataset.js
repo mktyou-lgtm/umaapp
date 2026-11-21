@@ -4,7 +4,7 @@ import { db } from './db.js';
 import { classOf } from '../public/sim.js';
 import { trainModel } from '../public/model.js';
 
-export function buildDataset() {
+export function buildDataset({ train = true } = {}) {
   const races = db.prepare(`SELECT race_id, date, venue, race_no, name, surface, distance, headcount, track_condition, class_text, grade
     FROM races ORDER BY date, race_id`).all();
   const raceIndex = new Map(races.map((r, i) => [r.race_id, i]));
@@ -19,13 +19,19 @@ export function buildDataset() {
   };
 
   const entries = db.prepare(`SELECT race_id, horse_no, frame_no, finish, horse_id, horse_name, jockey_id, jockey_name,
-      trainer_id, trainer_name, popularity, odds, weight_carried FROM entries`).all()
+      trainer_id, trainer_name, popularity, odds, weight_carried, time_sec, last3f, corner, sex_age, horse_weight FROM entries`).all()
     .filter((e) => raceIndex.has(e.race_id))
-    .map((e) => [
-      raceIndex.get(e.race_id), e.horse_no, e.finish,
-      idOf(names.h, e.horse_id, e.horse_name), idOf(names.j, e.jockey_id, e.jockey_name),
-      idOf(names.t, e.trainer_id, e.trainer_name), e.popularity, e.odds, e.frame_no, e.weight_carried,
-    ]);
+    .map((e) => {
+      const corners = (e.corner || '').split('-').map(Number).filter((v) => v > 0);
+      return [
+        raceIndex.get(e.race_id), e.horse_no, e.finish,
+        idOf(names.h, e.horse_id, e.horse_name), idOf(names.j, e.jockey_id, e.jockey_name),
+        idOf(names.t, e.trainer_id, e.trainer_name), e.popularity, e.odds, e.frame_no, e.weight_carried,
+        // 予想モデル用: 走破タイム・推定上り・最初と最後のコーナー通過順位・性齢・馬体重
+        e.time_sec ?? null, e.last3f ?? null, corners[0] ?? null, corners.at(-1) ?? null,
+        e.sex_age || null, parseInt(e.horse_weight, 10) || null,
+      ];
+    });
 
   // 単勝（0）と複勝（1）の払戻だけを書き出す
   const payouts = db.prepare(`SELECT race_id, bet_type, combination, amount FROM payouts WHERE bet_type IN ('単勝', '複勝')`).all()
@@ -71,7 +77,7 @@ export function buildDataset() {
     },
   };
   // 勝率予測モデル（学習と検証結果）
-  data.model = trainModel(data);
+  data.model = train ? trainModel(data) : null;
   return data;
 }
 

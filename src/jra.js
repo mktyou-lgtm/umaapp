@@ -162,6 +162,12 @@ function parseRaceHeader(unit) {
   };
 }
 
+/** 「1:43.3」→ 103.3 秒 */
+function timeSec(text) {
+  const m = String(text).trim().match(/^(?:(\d+):)?(\d+(?:\.\d)?)$/);
+  return m ? Number(m[1] || 0) * 60 + Number(m[2]) : null;
+}
+
 /**
  * 全レース一覧ページ（1 開催日・1 場の全レース結果と払戻）をパース。
  * 結果が出ていないレースは含めない。
@@ -205,6 +211,11 @@ export async function fetchMeetingResults(sesCname, meeting) {
         odds: null,
         popularity: intOrNull(row.children('td.pop').text()),
         horse_weight: nospace(row.children('td.h_weight').text()) || null,
+        time_sec: timeSec(row.children('td.time').text()),
+        margin: nospace(row.children('td.margin').text()) || null,
+        corner: row.children('td.corner').text().trim().split(/\s+/).filter((v) => /^\d+$/.test(v)).join('-') || null,
+        last3f: parseFloat(row.children('td.f_time').text()) || null,
+        rating: intOrNull(row.children('td.rat').text()),
       });
       const e = entries.at(-1);
       e.jockey_id = personId(jockeyA, /pw04kmk(\d+)\//, e.jockey_name);

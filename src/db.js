@@ -144,6 +144,10 @@ const hasColumn = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all(
 if (!hasColumn('races', 'grade')) db.exec('ALTER TABLE races ADD COLUMN grade TEXT'); // 'G1' 'G2' 'G3' 'JG1' 'L' など
 if (!hasColumn('races', 'odds_cname')) db.exec('ALTER TABLE races ADD COLUMN odds_cname TEXT'); // 確定オッズページ
 if (!hasColumn('races', 'odds_at')) db.exec('ALTER TABLE races ADD COLUMN odds_at TEXT'); // 全馬の確定オッズを取得した日時
+// 走破タイム（秒）・着差・コーナー通過順位・推定上り 3F（秒）・レーティング
+for (const [col, type] of [['time_sec', 'REAL'], ['margin', 'TEXT'], ['corner', 'TEXT'], ['last3f', 'REAL'], ['rating', 'INTEGER']]) {
+  if (!hasColumn('entries', col)) db.exec(`ALTER TABLE entries ADD COLUMN ${col} ${type}`);
+}
 
 // 外国人騎手・地方の騎手などコードの無い人は名前で識別する（'n:D.レーン'）。古いデータの空欄を埋める。
 db.exec(`
