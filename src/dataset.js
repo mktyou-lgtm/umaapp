@@ -77,7 +77,10 @@ export function buildDataset({ train = true } = {}) {
     },
   };
   // 勝率予測モデル（学習と検証結果）
-  data.model = train ? trainModel(data) : null;
+  // 券種ごとの検証用に全券種の払戻を渡す（data.json には書き出さない）
+  const allPayouts = db.prepare('SELECT race_id, bet_type, combination, amount FROM payouts').all()
+    .map((p) => [p.race_id, p.bet_type, p.combination, p.amount]);
+  data.model = train ? trainModel(data, { payouts: allPayouts }) : null;
   return data;
 }
 

@@ -258,8 +258,87 @@ function trainPart(samples, keys) {
 
 const round = (v, n = 4) => Math.round(v * 10 ** n) / 10 ** n;
 
+// ---- 券種ごとの的中確率 ----
+
+/** 券種（db は払戻データでの名前。ordered は着順どおりに当てる券種） */
+export const BET_KINDS = [
+  { key: 'win', label: '単勝', db: '単勝', size: 1, ordered: true, desc: '1着を当てる' },
+  { key: 'place', label: '複勝', db: '複勝', size: 1, desc: '3着以内（7頭以下は2着以内）を当てる' },
+  { key: 'wide', label: 'ワイド', db: 'ワイド', size: 2, desc: '2頭がどちらも3着以内' },
+  { key: 'quinella', label: '馬連', db: '馬連', size: 2, desc: '1・2着の2頭（順不同）' },
+  { key: 'exacta', label: '馬単', db: '馬単', size: 2, ordered: true, desc: '1着→2着の順に当てる' },
+  { key: 'trio', label: '3連複', db: '3連複', size: 3, desc: '1〜3着の3頭（順不同）' },
+  { key: 'trifecta', label: '3連単', db: '3連単', size: 3, ordered: true, desc: '1着→2着→3着の順に当てる' },
+];
+
+/**
+ * 各馬の勝率から、券種ごとに的中確率の高い買い目を求める。
+ * 2着・3着は「残った馬の中で、勝率を少し平らにした値に比例して決まる」と考える（ハービルの方法の補正版）。
+ * そのままのハービルの方法は人気馬が 2・3 着に来る確率を高く見積もりすぎるため、勝率を
+ * 2 着は PLACE_POW[0] 乗、3 着は PLACE_POW[1] 乗して平らにする（値は過去レースに合わせて決めたもの）。
+ * p: 勝率、nos: 馬番（p と同じ順）。返り値: { win: [{ combo: '7', nos: [7], p }], ... }（確率の高い順に top 件）
+ */
+export let PLACE_POW = [0.85, 0.7];
+export function setPlacePow(v) { PLACE_POW = v; }
+export function betProbs(p, nos, top = 3, pow = PLACE_POW) {
+  const n = p.length;
+  const flat = (a) => { const q = p.map((v) => (v > 0 ? v ** a : 0)); const z = q.reduce((x, y) => x + y, 0) || 1; return q.map((v) => v / z); };
+  const q2 = flat(pow[0]), q3 = flat(pow[1]);
+  const N = 20; // 添字の詰め方（馬番ではなく p の並び順で数える）
+  const win = Float64Array.from(p);
+  const top2 = new Float64Array(n), top3 = new Float64Array(n);
+  const exacta = new Float64Array(N * N), quin = new Float64Array(N * N), wide = new Float64Array(N * N);
+  const trif = new Float64Array(N * N * N), trio = new Float64Array(N * N * N);
+  const pair = (a, b) => (a < b ? a * N + b : b * N + a);
+  for (let i = 0; i < n; i++) {
+    const pi = p[i];
+    if (!(pi > 0)) continue;
+    for (let j = 0; j < n; j++) {
+      if (j === i || !(p[j] > 0)) continue;
+      const pij = (pi * q2[j]) / Math.max(1e-9, 1 - q2[i]);
+      exacta[i * N + j] += pij; quin[pair(i, j)] += pij;
+      top2[i] += pij; top2[j] += pij;
+      if (n < 3) continue;
+      for (let k = 0; k < n; k++) {
+        if (k === i || k === j || !(p[k] > 0)) continue;
+        const pijk = (pij * q3[k]) / Math.max(1e-9, 1 - q3[i] - q3[j]);
+        trif[(i * N + j) * N + k] += pijk;
+        const [a, b, c] = [i, j, k].sort((x, y) => x - y);
+        trio[(a * N + b) * N + c] += pijk;
+        wide[pair(i, j)] += pijk; wide[pair(i, k)] += pijk; wide[pair(j, k)] += pijk;
+        top3[i] += pijk; top3[j] += pijk; top3[k] += pijk;
+      }
+    }
+  }
+  // 確率の高い順に top 件を取り出し、馬番の組み合わせ（払戻データと同じ書き方）にする
+  const pick = (arr, decode, ordered) => {
+    const idx = [];
+    for (let x = 0; x < arr.length; x++) if (arr[x] > 0) idx.push(x);
+    idx.sort((a, b) => arr[b] - arr[a]);
+    return idx.slice(0, top).map((x) => {
+      let h = decode(x).map((i) => nos[i]);
+      if (!ordered) h = h.sort((a, b) => a - b);
+      return { combo: h.join('-'), nos: h, p: arr[x] };
+    });
+  };
+  const one = (x) => [x], two = (x) => [Math.floor(x / N), x % N], three = (x) => [Math.floor(x / (N * N)), Math.floor(x / N) % N, x % N];
+  const out = {
+    win: pick(win, one, true),
+    // 複勝: 8頭以上は3着以内、5〜7頭は2着以内、4頭以下は発売なし
+    place: n >= 8 ? pick(top3, one) : n >= 5 ? pick(top2, one) : [],
+    wide: n >= 4 ? pick(wide, two) : [],
+    quinella: pick(quin, two),
+    exacta: pick(exacta, two, true),
+    trio: n >= 3 ? pick(trio, three) : [],
+    trifecta: n >= 3 ? pick(trif, three, true) : [],
+  };
+  return out;
+}
+
 /** 検証用の集計 */
-function evaluate(test) {
+function evaluate(test, payMap) {
+  // 券種ごとに「的中確率が最も高い買い目」を毎レース 1 点ずつ買った場合（モデル／オッズ（人気順）で選んだ場合）
+  const betAcc = BET_KINDS.map((k) => ({ key: k.key, model: { bets: 0, hits: 0, ret: 0, pred: 0 }, market: { bets: 0, hits: 0, ret: 0, pred: 0 } }));
   const ll = { uniform: 0, market: 0, fundamental: 0, combined: 0 };
   const top = { market: 0, fundamental: 0, combined: 0 };
   const cal = [0, 0.05, 0.1, 0.2, 0.3, 0.5, 1.01].slice(0, -1).map((lo, i, a) => ({ lo, hi: [0.05, 0.1, 0.2, 0.3, 0.5, 1.01][i], n: 0, pred: 0, wins: 0 }));
@@ -286,6 +365,19 @@ function evaluate(test) {
     });
     const fav = argmax(pm); base.favorite.bets++; base.favorite.ret += s.runners[fav].payout;
     const ct = argmax(pc); base.combinedTop.bets++; base.combinedTop.ret += s.runners[ct].payout;
+    if (payMap) {
+      const nos = s.runners.map((r) => r.horse_no);
+      const picks = { model: betProbs(pc, nos, 1), market: betProbs(pm, nos, 1) };
+      BET_KINDS.forEach((k, i) => {
+        for (const who of ['model', 'market']) {
+          const b = picks[who][k.key][0];
+          if (!b) continue;
+          const a = betAcc[i][who];
+          const pay = payMap.get(`${s.race_id}|${k.db}|${b.combo}`) || 0;
+          a.bets++; a.pred += b.p; a.ret += pay; if (pay) a.hits++;
+        }
+      });
+    }
   }
   const R = test.length;
   const rec = (x) => ({ ...x, recovery: x.bets ? round(x.ret / (x.bets * 100)) : null });
@@ -299,6 +391,13 @@ function evaluate(test) {
     roi: roi.map(rec),
     roiFundamental: roiFund.map(rec),
     baseline: Object.fromEntries(Object.entries(base).map(([k, x]) => [k, rec(x)])),
+    bets: payMap ? betAcc.map((b) => ({
+      key: b.key,
+      ...Object.fromEntries(['model', 'market'].map((w) => {
+        const a = b[w];
+        return [w, { bets: a.bets, hits: a.hits, ret: a.ret, hitRate: a.bets ? round(a.hits / a.bets) : null, predHit: a.bets ? round(a.pred / a.bets) : null, recovery: a.bets ? round(a.ret / (a.bets * 100)) : null }];
+      })),
+    })) : null,
   };
 }
 
@@ -338,7 +437,7 @@ const shiftDate = (d, days) => new Date(Date.parse(d) + days * 864e5).toISOStrin
  */
 export function trainModel(data, {
   warmupDays = 30, stepDays = 28, minTrainRaces = 300,
-  features = FEATURES.map((f) => f.key), market = [MARKET.key], mode = 'stack',
+  features = FEATURES.map((f) => f.key), market = [MARKET.key], mode = 'stack', payouts = null,
 } = {}) {
   const { samples } = buildSamples(data);
   if (samples.length < 200) return null;
@@ -363,7 +462,8 @@ export function trainModel(data, {
       tested.push(...test);
       folds++;
     }
-    report = { ...evaluate(tested), folds, stepDays, mode, trainFrom: withOdds[0].date };
+    const payMap = payouts && new Map(payouts.map(([rid, type, combo, amount]) => [`${rid}|${type}|${combo}`, amount]));
+    report = { ...evaluate(tested, payMap), folds, stepDays, mode, trainFrom: withOdds[0].date };
   }
   const fundamental = trainPart(usable, fKeys);
   const combined = withOdds.length >= 200 ? trainCombined(withOdds, fundamental, fKeys, market, mode) : null;

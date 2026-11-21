@@ -142,6 +142,25 @@ tr.refund td { color: var(--muted); }
 .c-pred b { font-size: 15px; font-variant-numeric: tabular-nums; }
 .c-pred b.pbest { color: var(--accent); }
 .ev-good { color: var(--up-text); font-weight: 700; }
+.bets-title { margin: 16px 0 6px; font-size: 14px; }
+table.bets td, table.bets th { vertical-align: top; }
+table.bets td.l .sub2 { white-space: normal; }
+.bmain { display: flex; flex-wrap: nowrap; align-items: center; gap: 2px; margin-bottom: 2px; }
+.bno { display: inline-block; min-width: 22px; padding: 1px 4px; border-radius: 4px; border: 1px solid var(--axis); text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.bsep { color: var(--muted); font-size: 12px; }
+.b-mlabel { display: none; }
+@media (max-width: 600px) {
+  table.bets thead { display: none; }
+  table.bets, table.bets tbody { display: block; width: 100%; }
+  table.bets tr { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; padding: 8px 0; border-bottom: 1px solid var(--grid); }
+  table.bets td { display: block; padding: 0; border: 0; text-align: left; }
+  table.bets td.b-kind { grid-column: 1; grid-row: 1; }
+  table.bets td.b-prob { grid-column: 2; grid-row: 1; text-align: right; }
+  table.bets td.b-combo { grid-column: 1 / -1; }
+  table.bets td.b-check { grid-column: 1 / -1; font-size: 12px; color: var(--ink-2); }
+  table.bets td.b-check .sub2 { display: inline; margin-left: 6px; }
+  .b-mlabel { display: inline; }
+}
 .value-tag { display: inline-block; padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, var(--up-text) 15%, transparent); color: var(--up-text); font-size: 11px; font-weight: 700; }
 .ctable td.c-pred { white-space: nowrap; }
 .status-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; background: var(--chip); color: var(--down-text); font-size: 12px; font-weight: 600; }
@@ -198,6 +217,8 @@ tr.refund td { color: var(--muted); }
       <p class="title" id="cardTitle"></p>
       <p class="note" id="cardModelNote" style="margin:0 0 8px"></p>
       <div id="cardTable"></div>
+      <h4 class="bets-title">当たる確率が高い買い目</h4>
+      <div id="cardBets"></div>
       <p class="note">予想勝率は過去のデータからの推定で、的中を保証するものではありません。下の「予想モデルの検証結果」で、過去のレースでの当たり具合を確認できます。</p>
       <p class="note">騎手・調教師・馬の成績は、レース前日までの過去 1 年（取得済みデータの範囲）で、選んだ範囲の条件に一致するレースを集計。単回 = 単勝を 100 円ずつ買った場合の回収率。（）内は件数で、10 件未満は薄く表示。各項目で上位 3 頭の値を太字にしています。名前をタップすると、その条件で収支シミュレーターを開きます。</p>
     </div>
@@ -288,7 +309,7 @@ import {
   createStaticEngine, normalizeName, toHiragana, toKatakana,
   VENUE_LIST, DIST_BANDS, POP_BANDS, CONDITIONS, CLASS_LIST, CLASS_EXTRA, SURFACES, CARD_SCOPES,
 } from './sim.js';
-import { createPredictor, FEATURES, MARKET, MARKET2 } from './model.js';
+import { createPredictor, betProbs, BET_KINDS, FEATURES, MARKET, MARKET2 } from './model.js';
 const $ = (s) => document.querySelector(s);
 const f = $('#f');
 
@@ -924,7 +945,36 @@ function renderCard(e) {
       <td class="c-t" data-label="調教師"><div class="pname">${link('trainer', x.trainer_id, x.trainer_name)}</div>${statLine(x.trainer, { win: best.tWin.has(x.seq), place: best.tPlace.has(x.seq), rec: best.tRec.has(x.seq) })}</td>
       <td class="c-h" data-label="馬"><div class="pstat">全 ${x.horse.runs ? rec(x.horse) : '-'}・同条件 ${x.horseCond.runs ? rec(x.horseCond) : '-'}</div>${formHtml(x.form)}</td>
     </tr>`).join('')}</tbody></table>`;
+  renderBets(runners, usedComb);
   cv.last = c;
+}
+
+// 券種ごとに、的中確率の高い買い目（予想勝率から計算）
+function renderBets(runners, usedComb) {
+  const box = $('#cardBets');
+  const active = runners.filter((x) => x.pred && !x.status);
+  if (active.length < 2) { box.innerHTML = '<p class="note">予想勝率が出ていないため計算できません。</p>'; return; }
+  if (active.some((x) => x.horse_no == null)) { box.innerHTML = '<p class="note">枠順（馬番）が決まると表示します。</p>'; return; }
+  const bp = betProbs(active.map((x) => x.pred.p), active.map((x) => x.horse_no), 3);
+  const oddsOf = new Map(active.map((x) => [x.horse_no, x.odds]));
+  const check = new Map((modelOf()?.report?.bets || []).map((b) => [b.key, b.model]));
+  const rows = BET_KINDS.map((k) => ({ k, list: bp[k.key] })).filter((r) => r.list.length)
+    .sort((a, b) => b.list[0].p - a.list[0].p);
+  const sep = (k) => (k.ordered ? '→' : '-');
+  const comboHtml = (k, b) => b.nos.map((n) => `<span class="bno">${n}</span>`).join(`<span class="bsep">${sep(k)}</span>`);
+  box.innerHTML = `<div class="hscroll"><table class="bets"><thead><tr><th class="l">券種</th><th class="l">買い目（確率の高い順）</th><th>的中確率</th><th>過去の検証<span class="sub2">毎レース 1 点買い</span></th></tr></thead><tbody>${
+    rows.map(({ k, list }, i) => {
+      const b = list[0];
+      const ev = k.key === 'win' && oddsOf.get(b.nos[0]) ? ` <span class="sub2">期待値 ${(b.p * oddsOf.get(b.nos[0])).toFixed(2)}</span>` : '';
+      const c = check.get(k.key);
+      return `<tr>
+        <td class="l b-kind"><b>${k.label}</b>${i === 0 ? ' <span class="value-tag">最も当たりやすい</span>' : ''}<div class="sub2">${k.desc}</div></td>
+        <td class="l b-combo"><div class="bmain">${comboHtml(k, b)}</div>${list.slice(1).map((x) => `<div class="sub2">${x.nos.join(sep(k))}（${pct(x.p)}）</div>`).join('')}</td>
+        <td class="b-prob"><b>${pct(b.p)}</b>${ev}</td>
+        <td class="b-check">${c ? `<span class="b-mlabel">過去の検証（毎レース 1 点買い）: </span>的中 ${pct(c.hitRate)}<div class="sub2">回収率 ${pct(c.recovery)}</div>` : '<span class="sub2">-</span>'}</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>
+    <p class="note">${usedComb ? '総合モデル' : '能力モデル'}の予想勝率から、2・3 着の入り方も含めて計算した確率です（人気馬が 2・3 着に来る確率を高く見すぎないよう補正しています）。「過去の検証」は、学習に使っていない過去のレースで、各券種の最も確率の高い買い目を毎レース 100 円ずつ買った場合の結果です。的中しやすい券種ほど配当は低く、どの券種も回収率は 100% を下回っています。</p>`;
 }
 
 // ---- 予想モデルの検証結果 ----
@@ -966,6 +1016,15 @@ function renderModelReport() {
       <tr><td class="l">（比較）総合モデルの本命を買う</td><td>${fmtN(rep.baseline.combinedTop.bets)}</td><td>-</td><td>${pct(rep.baseline.combinedTop.recovery)}</td></tr>
     </table></div>
     <p class="note">注意: 判定に使ったのは締切後の確定オッズです。実際に買う時点のオッズとはずれるため、実戦ではこの回収率より下がることがあります。購入数が少ない行は偶然の影響が大きいので参考程度にしてください。</p>`;
+  }
+  // 券種ごとの「最も確率の高い買い目」を毎レース買った場合
+  if (rep?.bets) {
+    const kinds = new Map(BET_KINDS.map((k) => [k.key, k]));
+    html += `<h4>券種ごとに最も確率の高い買い目を毎レース 1 点買った場合</h4>
+    <div class="hscroll"><table><tr><th class="l">券種</th><th>予想の的中確率</th><th>実際の的中率</th><th>回収率</th><th>人気順で選んだ場合の回収率</th></tr>
+      ${rep.bets.map((b) => `<tr><td class="l">${kinds.get(b.key)?.label ?? b.key}</td><td>${pct(b.model.predHit)}</td><td>${pct(b.model.hitRate)}</td><td class="${b.model.recovery >= 1 ? 'good' : ''}">${pct(b.model.recovery)}</td><td>${pct(b.market.recovery)}</td></tr>`).join('')}
+    </table></div>
+    <p class="note">「予想の的中確率」（総合モデルから計算した確率の平均）と「実際の的中率」が近いほど、出馬表の的中確率をそのまま信じてよいことになります。「人気順」は、オッズから見た勝率で同じ計算をして選んだ買い目です。</p>`;
   }
   // 能力モデルで効いている要素（標準化した重みの大きい順）
   const f = m.fundamental;
